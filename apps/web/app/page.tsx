@@ -61,7 +61,15 @@ import type {
   UploadedVideo,
 } from "@/lib/types";
 
-type View = "home" | "ask-ai" | "library" | "skills" | "recording" | "post-recording" | "editor";
+type View =
+  | "home"
+  | "ask-ai"
+  | "library"
+  | "skills"
+  | "recording"
+  | "post-recording"
+  | "ai-transforming"
+  | "editor";
 type SkillTab = "video" | "doc";
 type RecordingState = "idle" | "starting" | "recording" | "processing" | "ready" | "error";
 type EditorTab = "script" | "voice" | "music" | "visuals" | "zooms" | "avatar" | "elements";
@@ -232,6 +240,13 @@ const avatarOptions = [
   "linear-gradient(135deg, #ffe0da, #ffffff)",
 ] as const;
 
+const aiTransformationSteps = [
+  "Analyzing recording",
+  "Generating AI script",
+  "Creating AI voiceover",
+  "Preparing editor workspace",
+] as const;
+
 function buildDefaultNarration(name: string) {
   return `This walkthrough demonstrates ${name}. First, follow the action on screen. Next, notice each key decision point and the result it produces. Finally, review the completed flow so the process can be repeated confidently.`;
 }
@@ -270,6 +285,7 @@ export default function Home() {
   const [selectedSkills, setSelectedSkills] = useState<GeneratedSkill[]>(["video", "guide"]);
   const [recordedUpload, setRecordedUpload] = useState<UploadedVideo | null>(null);
   const [isGeneratingContent, setIsGeneratingContent] = useState(false);
+  const [transformationStepIndex, setTransformationStepIndex] = useState(0);
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordingError, setRecordingError] = useState("");
@@ -650,6 +666,15 @@ export default function Home() {
     }
   }
 
+  function reviewUploadedVideos(videos: UploadedVideo[]) {
+    addUploadedVideos(videos, { navigate: false });
+    setRecordedUpload(videos[0] ?? null);
+    setEnhancement(null);
+    setUseOriginalVoice(false);
+    setVoiceStatus("Generate AI content to create a clean narration script and voiceover.");
+    setActiveView("post-recording");
+  }
+
   function applyScriptToCaptions() {
     if (!enhancement?.script) {
       setVoiceStatus("Record or upload a video first, then refresh voiceover.");
@@ -757,17 +782,24 @@ export default function Home() {
     setIsGeneratingContent(true);
     setError("");
     setUseOriginalVoice(false);
+    setTransformationStepIndex(0);
+    setActiveView("ai-transforming");
 
     try {
+      await new Promise((resolve) => window.setTimeout(resolve, 180));
       let nextEnhancement = enhancement;
       if (!nextEnhancement && recordedUpload) {
+        setTransformationStepIndex(1);
         nextEnhancement = await enhanceRecording({
           file: recordedUpload.file,
           originalName: recordedUpload.originalName,
         });
         setEnhancement(nextEnhancement);
+        setTransformationStepIndex(2);
+        await new Promise((resolve) => window.setTimeout(resolve, 240));
       }
 
+      setTransformationStepIndex(3);
       const script = nextEnhancement?.script || buildDefaultNarration(projectName);
       setTimeline((current) => ({
         ...current,
@@ -778,9 +810,11 @@ export default function Home() {
       }));
       setVoiceStatus("AI script and voiceover are ready for review.");
       setEditorTab("script");
+      await new Promise((resolve) => window.setTimeout(resolve, 220));
       setActiveView("editor");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "AI content generation failed.");
+      setActiveView("post-recording");
     } finally {
       setIsGeneratingContent(false);
     }
@@ -830,7 +864,7 @@ export default function Home() {
               <Plus size={22} />
               <span>Start Recording</span>
             </button>
-            <VideoDropzone onUploaded={addUploadedVideos} />
+            <VideoDropzone onUploaded={reviewUploadedVideos} />
           </div>
         </section>
 
@@ -1149,6 +1183,82 @@ export default function Home() {
             <p className="ai-minutes-note">~0.5 AI mins will be used</p>
             {error ? <p className="error">{error}</p> : null}
           </aside>
+        </div>
+      </section>
+    );
+  }
+
+  function renderAiTransforming() {
+    const selectedSkillLabels: Record<GeneratedSkill, string> = {
+      video: "Video",
+      guide: "Step-by-step guide",
+      assessment: "Assessment",
+      faqs: "FAQs",
+    };
+
+    return (
+      <section className="transforming-page" aria-busy={isGeneratingContent}>
+        <header className="post-recording-topbar">
+          <button className="editor-back" type="button" aria-label="Back" onClick={() => setActiveView("post-recording")}>
+            <ChevronLeft size={19} />
+          </button>
+          <input
+            aria-label="Recording title"
+            className="editor-title-input"
+            value={projectName}
+            onChange={(event) => setProjectName(event.target.value)}
+          />
+        </header>
+
+        <div className="transforming-shell">
+          <section className="transforming-card">
+            <div className="transforming-preview">
+              {previewUrl ? (
+                <video src={previewUrl} muted playsInline />
+              ) : (
+                <div className="transforming-placeholder">
+                  <Video size={34} />
+                </div>
+              )}
+              <span className="processing-badge">
+                <Sparkles size={15} />
+                AI transformation
+              </span>
+            </div>
+
+            <div className="transforming-copy">
+              <span className="status-chip">
+                <Loader2 className="spin" size={16} />
+                {aiTransformationSteps[transformationStepIndex]}
+              </span>
+              <h1>Preparing your editable video</h1>
+              <p>
+                Flow Studio is turning the raw capture into a clean script, AI voiceover, captions,
+                and an editor-ready timeline.
+              </p>
+              <div className="selected-output-row" aria-label="Selected content outputs">
+                {selectedSkills.map((skill) => (
+                  <span key={skill}>{selectedSkillLabels[skill]}</span>
+                ))}
+              </div>
+
+              <div className="transforming-steps">
+                {aiTransformationSteps.map((step, index) => {
+                  const isDone = index < transformationStepIndex;
+                  const isActive = index === transformationStepIndex;
+
+                  return (
+                    <div className={`transforming-step ${isActive ? "is-active" : ""}`} key={step}>
+                      <span>
+                        {isDone ? <Check size={15} /> : isActive ? <Loader2 className="spin" size={15} /> : <Circle size={12} />}
+                      </span>
+                      <strong>{step}</strong>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </section>
         </div>
       </section>
     );
@@ -1653,8 +1763,14 @@ export default function Home() {
         </nav>
       </aside>
 
-      <section className={`main-area ${activeView === "editor" || activeView === "post-recording" ? "is-editor" : ""}`}>
-        {activeView !== "editor" && activeView !== "post-recording" ? (
+      <section
+        className={`main-area ${
+          activeView === "editor" || activeView === "post-recording" || activeView === "ai-transforming"
+            ? "is-editor"
+            : ""
+        }`}
+      >
+        {activeView !== "editor" && activeView !== "post-recording" && activeView !== "ai-transforming" ? (
           <header className="utility-bar">
             <button className="ghost-icon" type="button" aria-label="Help" title="Help">
               <HelpCircle size={18} />
@@ -1675,9 +1791,10 @@ export default function Home() {
         {activeView === "skills" ? renderSkills() : null}
         {activeView === "recording" ? renderRecording() : null}
         {activeView === "post-recording" ? renderPostRecording() : null}
+        {activeView === "ai-transforming" ? renderAiTransforming() : null}
         {activeView === "editor" ? renderEditor() : null}
 
-        {activeView !== "editor" && activeView !== "post-recording" ? (
+        {activeView !== "editor" && activeView !== "post-recording" && activeView !== "ai-transforming" ? (
           <button className="floating-send" type="button" aria-label="Ask AI" onClick={() => setActiveView("ask-ai")}>
             <Send size={19} />
           </button>
@@ -1729,7 +1846,7 @@ export default function Home() {
                 <strong>Upload an existing recording</strong>
                 <small>Drop an existing meeting or screen recording and get a cleaned up video.</small>
                 <VideoDropzone onUploaded={(videos) => {
-                  addUploadedVideos(videos);
+                  reviewUploadedVideos(videos);
                   setShowCreateVideoModal(false);
                 }} />
               </div>
