@@ -1,7 +1,9 @@
 import html
+import json
 import os
 from pathlib import Path
 from shutil import copyfileobj
+import subprocess
 from uuid import UUID, uuid4
 
 import httpx
@@ -41,6 +43,32 @@ projects: dict[UUID, Project] = {}
 jobs: dict[UUID, RenderJob] = {}
 
 
+def probe_video_duration(path: Path) -> float | None:
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+
+    try:
+        duration = float(result.stdout.strip())
+    except ValueError:
+        return None
+    return duration if duration > 0 else None
+
+
 def build_ai_script(original_name: str) -> str:
     title = Path(original_name or "screen recording").stem.replace("-", " ").replace("_", " ")
     return (
@@ -48,6 +76,122 @@ def build_ai_script(original_name: str) -> str:
         "First, follow the action on screen. Next, notice each key decision point and the result it produces. "
         "Finally, review the completed flow so the process can be repeated confidently."
     )
+
+
+def build_fallback_guide(original_name: str, script: str) -> dict:
+    title = Path(original_name or "screen recording").stem.replace("-", " ").replace("_", " ")
+    sentences = [
+        sentence.strip()
+        for sentence in script.replace("!", ".").replace("?", ".").split(".")
+        if sentence.strip()
+    ]
+    primary_steps = sentences[:4] or [
+        "Open the workflow screen.",
+        "Follow the main action in sequence.",
+        "Review the completed result.",
+    ]
+
+    return {
+        "title": f"{title} guide",
+        "summary": "A concise walkthrough generated from the captured screen recording.",
+        "steps": [
+            {
+                "title": f"Step {index + 1}",
+                "description": step,
+                "timestamp": max(index * 8, 0),
+            }
+            for index, step in enumerate(primary_steps)
+        ],
+        "faqs": [
+            {
+                "question": "What does this recording demonstrate?",
+                "answer": primary_steps[0],
+            },
+            {
+                "question": "What should the viewer do next?",
+                "answer": primary_steps[-1],
+            },
+        ],
+        "assessment": [
+            {
+                "question": "Can the viewer identify the main workflow action?",
+                "answer": "Yes, by following the narrated steps and the on-screen sequence.",
+            }
+        ],
+    }
+
+
+def parse_ai_json(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise
+        return json.loads(text[start : end + 1])
+
+
+def build_ai_content(original_name: str, selected_skills: list[str]) -> tuple[str, dict, list[str], str | None]:
+    fallback_script = build_ai_script(original_name)
+    fallback_guide = build_fallback_guide(original_name, fallback_script)
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return fallback_script, fallback_guide, [
+            "Analyze the captured workflow",
+            "Create a concise narration script",
+            "Generate step-by-step documentation",
+            "Prepare the video for AI voiceover and export",
+        ], None
+
+    prompt = (
+        "You are building Trupeer-style product documentation from a screen recording. "
+        "Return only JSON with keys: script, guide, aiPlan. "
+        "guide must include title, summary, steps, faqs, and assessment. "
+        "Each step should have title, description, and timestamp seconds. "
+        f"Recording file name: {original_name}. "
+        f"Requested outputs: {', '.join(selected_skills or ['video', 'guide'])}."
+    )
+    try:
+        response = httpx.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": os.environ.get("ANTHROPIC_MODEL") or "claude-3-5-sonnet-20241022",
+                "max_tokens": 1600,
+                "temperature": 0.3,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        text = "".join(
+            part.get("text", "")
+            for part in payload.get("content", [])
+            if part.get("type") == "text"
+        ).strip()
+        parsed = parse_ai_json(text)
+        script = str(parsed.get("script") or fallback_script).strip()
+        guide = parsed.get("guide") if isinstance(parsed.get("guide"), dict) else fallback_guide
+        ai_plan = parsed.get("aiPlan") if isinstance(parsed.get("aiPlan"), list) else []
+        return script, guide, [str(item) for item in ai_plan[:8]] or [
+            "Analyze the captured workflow",
+            "Create a concise narration script",
+            "Generate step-by-step documentation",
+            "Prepare the video for AI voiceover and export",
+        ], None
+    except Exception as exc:
+        return fallback_script, fallback_guide, [
+            "Analyze the captured workflow",
+            "Create fallback narration script",
+            "Generate fallback documentation guide",
+            "Prepare the video for export",
+        ], f"AI planning used fallback content: {exc}"
 
 
 def choose_tts_provider(requested: str | None) -> str:
@@ -200,6 +344,7 @@ def upload_videos(files: list[UploadFile] = File(...)):
                 originalName=file.filename,
                 contentType=file.content_type or "video/mp4",
                 size=target.stat().st_size,
+                duration=probe_video_duration(target),
             )
         )
 
@@ -213,40 +358,100 @@ def enhance_recording(payload: EnhanceRequest):
         raise HTTPException(status_code=404, detail="recording not found")
 
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    script = build_ai_script(payload.originalName or payload.file)
+    script, guide, ai_plan, ai_warning = build_ai_content(
+        payload.originalName or payload.file,
+        payload.selectedSkills,
+    )
     provider = choose_tts_provider(payload.ttsProvider)
     steps = [
         "Screen recording uploaded",
-        "Video cleanup plan prepared",
+        "AI workflow analysis completed",
+        "User guide flow generated",
         "AI narration script generated",
     ]
-    warning: str | None = None
+    warnings = [ai_warning] if ai_warning else []
     voiceover_file: str | None = None
+    voiceover_path: Path | None = None
 
     if provider != "none":
         output_name = f"{Path(payload.file).stem}-voiceover.mp3"
         output_path = EXPORT_DIR / output_name
         try:
             if provider == "azure":
-                synthesize_azure(script, output_path)
+                synthesize_azure(script, output_path, payload.voice)
             else:
-                synthesize_elevenlabs(script, output_path)
+                synthesize_elevenlabs(script, output_path, payload.voice)
             voiceover_file = output_name
+            voiceover_path = output_path
             steps.append(f"{provider} TTS voiceover generated")
         except Exception as exc:
-            warning = f"TTS generation skipped: {exc}"
+            warnings.append(f"TTS generation skipped: {exc}")
             steps.append("TTS voiceover needs attention")
     else:
-        warning = "No TTS provider credentials are configured"
+        warnings.append("No TTS provider credentials are configured")
         steps.append("TTS voiceover needs credentials")
+
+    duration = probe_video_duration(source) or 10
+    caption = script.split(".")[0][:180]
+    project = Project(
+        name=Path(payload.originalName or payload.file).stem or "AI generated walkthrough",
+        timeline={
+            "clips": [
+                {
+                    "file": payload.file,
+                    "order": 1,
+                    "trimStart": 0,
+                    "trimEnd": duration,
+                    "zoom": [{"start": 0, "end": min(duration, 6), "scale": 1.04, "x": 0.5, "y": 0.5}],
+                    "caption": caption,
+                }
+            ],
+            "output": {"resolution": "1920x1080", "fps": 30, "format": "mp4"},
+            "narration": {
+                "enabled": True,
+                "provider": provider,
+                "script": script,
+                "voice": payload.voice or "Jenny - Female, English (US), Product demo",
+                "useOriginalAudio": False,
+                "backgroundMusic": False,
+                "musicVolume": 0,
+            },
+        },
+    )
+    commands = build_render_commands(project.id, project.timeline, UPLOAD_DIR, EXPORT_DIR, voiceover_path=voiceover_path)
+    output_file = EXPORT_DIR / f"{project.id}.{project.timeline.output.format}"
+    job = RenderJob(
+        projectId=project.id,
+        status="running",
+        outputFile=str(output_file),
+        downloadUrl=f"/media/exports/{output_file.name}",
+        voiceoverFile=voiceover_file,
+        commandPreview=command_preview(commands),
+    )
+    projects[project.id] = project
+    jobs[job.id] = job
+    final_video_url: str | None = None
+    try:
+        run_render_commands(commands)
+        job.status = "completed"
+        final_video_url = job.downloadUrl
+        steps.append("AI generated video rendered")
+    except Exception as exc:
+        job.status = "failed"
+        job.error = str(exc)
+        warnings.append(f"AI video render failed: {exc}")
 
     return EnhancedRecording(
         file=payload.file,
         script=script,
         ttsProvider=provider,
         voiceoverFile=voiceover_file,
+        finalVideoUrl=final_video_url,
+        renderJobId=job.id,
+        guide=guide,
+        aiPlan=ai_plan,
         steps=steps,
-        warning=warning,
+        warning=" ".join(warnings) if warnings else None,
     )
 
 

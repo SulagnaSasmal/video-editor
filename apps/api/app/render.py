@@ -138,13 +138,13 @@ def build_render_commands(
                 "[0:a]volume=0.16,loudnorm=I=-24:TP=-2:LRA=11[orig];"
                 "[1:a]loudnorm=I=-16:TP=-1.5:LRA=10,afade=t=in:st=0:d=0.25[voice];"
                 "[orig][voice]amix=inputs=2:duration=longest:dropout_transition=2,"
-                "loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.95[aout]"
+                "loudnorm=I=-14:TP=-1.5:LRA=11,alimiter=limit=0.95,apad[aout]"
             )
         else:
             audio_filter = (
                 "[1:a]loudnorm=I=-16:TP=-1.5:LRA=10,"
                 "afade=t=in:st=0:d=0.25,"
-                "alimiter=limit=0.95[aout]"
+                "alimiter=limit=0.95,apad[aout]"
             )
 
         commands.append(

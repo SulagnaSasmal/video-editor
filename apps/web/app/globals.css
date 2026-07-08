@@ -1558,6 +1558,113 @@ textarea {
   padding: 16px 18px;
 }
 
+.ai-plan-panel,
+.guide-output-panel {
+  border-top: 1px solid var(--line);
+  padding: 16px 18px;
+}
+
+.ai-plan-panel {
+  background: #fbfcff;
+}
+
+.ai-plan-panel > span,
+.guide-output-heading span {
+  align-items: center;
+  color: var(--accent);
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 800;
+  gap: 8px;
+}
+
+.ai-plan-panel ol {
+  color: #4b5563;
+  display: grid;
+  gap: 8px;
+  line-height: 1.45;
+  margin: 12px 0 0;
+  padding-left: 18px;
+}
+
+.guide-output-panel {
+  background: white;
+}
+
+.guide-output-heading {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.guide-output-heading small {
+  background: #eef2ff;
+  border-radius: 999px;
+  color: var(--accent);
+  font-weight: 700;
+  padding: 5px 8px;
+}
+
+.guide-output-panel h3 {
+  font-size: 17px;
+  margin-top: 12px;
+}
+
+.guide-output-panel > p {
+  color: var(--muted);
+  line-height: 1.5;
+  margin-top: 6px;
+}
+
+.guide-step-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.guide-step-item {
+  align-items: flex-start;
+  background: #f7f8fb;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 52px 1fr;
+  padding: 10px;
+}
+
+.guide-step-item time {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.guide-step-item div {
+  display: grid;
+  gap: 4px;
+}
+
+.guide-step-item span,
+.guide-mini-section p {
+  color: #5f6b7d;
+  line-height: 1.45;
+}
+
+.guide-mini-section {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+}
+
+.guide-mini-section b {
+  color: #111827;
+  display: block;
+  margin-bottom: 3px;
+}
+
 .script-toolbar {
   align-items: center;
   display: flex;
@@ -2011,6 +2118,25 @@ textarea {
   position: absolute;
 }
 
+.generated-video-badge {
+  align-items: center;
+  background: white;
+  border: 1px solid #d9ddff;
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  color: var(--accent);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 12px;
+  position: absolute;
+  right: 16px;
+  top: 16px;
+  z-index: 4;
+}
+
 .music-badge,
 .zoom-badge {
   align-items: center;
@@ -2029,11 +2155,11 @@ textarea {
 }
 
 .music-badge {
-  top: 16px;
+  top: 54px;
 }
 
 .zoom-badge {
-  top: 54px;
+  top: 92px;
 }
 
 .avatar-preview {

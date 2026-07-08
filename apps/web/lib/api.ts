@@ -70,6 +70,8 @@ export async function uploadVideos(files: File[]) {
 export async function enhanceRecording(recording: {
   file: string;
   originalName: string;
+  selectedSkills?: string[];
+  voice?: string;
 }) {
   const response = await fetch(`${API_BASE_URL}/ai/enhance`, {
     method: "POST",

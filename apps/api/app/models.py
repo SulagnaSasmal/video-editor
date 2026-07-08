@@ -113,12 +113,15 @@ class UploadedVideo(BaseModel):
     originalName: str
     contentType: str
     size: int
+    duration: float | None = None
 
 
 class EnhanceRequest(BaseModel):
     file: str
     originalName: str = ""
     ttsProvider: str | None = None
+    selectedSkills: list[str] = Field(default_factory=lambda: ["video", "guide"])
+    voice: str | None = None
 
     @field_validator("file")
     @classmethod
@@ -134,5 +137,9 @@ class EnhancedRecording(BaseModel):
     script: str
     ttsProvider: str
     voiceoverFile: str | None = None
+    finalVideoUrl: str | None = None
+    renderJobId: UUID | None = None
+    guide: dict | None = None
+    aiPlan: list[str] = Field(default_factory=list)
     steps: list[str] = Field(default_factory=list)
     warning: str | None = None

@@ -55,6 +55,21 @@ export type UploadedVideo = {
   originalName: string;
   contentType: string;
   size: number;
+  duration?: number | null;
+};
+
+export type GeneratedGuideStep = {
+  title: string;
+  description: string;
+  timestamp?: number;
+};
+
+export type GeneratedGuide = {
+  title: string;
+  summary: string;
+  steps: GeneratedGuideStep[];
+  faqs?: Array<{ question: string; answer: string }>;
+  assessment?: Array<{ question: string; answer: string }>;
 };
 
 export type EnhancedRecording = {
@@ -62,6 +77,10 @@ export type EnhancedRecording = {
   script: string;
   ttsProvider: string;
   voiceoverFile: string | null;
+  finalVideoUrl: string | null;
+  renderJobId: string | null;
+  guide: GeneratedGuide | null;
+  aiPlan: string[];
   steps: string[];
   warning: string | null;
 };

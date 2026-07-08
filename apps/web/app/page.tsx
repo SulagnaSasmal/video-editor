@@ -328,6 +328,12 @@ export default function Home() {
 
   const previewFile = realClips[0]?.file ?? "";
   const previewUrl = previewFile ? uploadedMediaUrl(previewFile) : "";
+  const generatedVideoUrl = enhancement?.finalVideoUrl
+    ? exportedMediaUrl(enhancement.finalVideoUrl)
+    : job?.status === "completed" && job.downloadUrl
+      ? exportedMediaUrl(job.downloadUrl)
+      : "";
+  const editorPreviewUrl = generatedVideoUrl || previewUrl;
   const totalDuration = useMemo(
     () =>
       timeline.clips.reduce(
@@ -585,7 +591,7 @@ export default function Home() {
       );
 
       const uploaded = await uploadVideos([recordingFile]);
-      addUploadedVideos(uploaded, { navigate: false });
+      addUploadedVideos(uploaded, { navigate: false, replace: true });
 
       if (uploaded[0]) {
         setRecordedUpload(uploaded[0]);
@@ -639,15 +645,15 @@ export default function Home() {
 
   function addUploadedVideos(
     videos: UploadedVideo[],
-    options: { navigate?: boolean } = {},
+    options: { navigate?: boolean; replace?: boolean } = {},
   ) {
     setTimeline((current) => {
       const nextClips = videos.map((video, index) => ({
         id: crypto.randomUUID(),
         file: video.file,
-        order: current.clips.length + index + 1,
+        order: options.replace ? index + 1 : current.clips.length + index + 1,
         trimStart: 0,
-        trimEnd: 10,
+        trimEnd: Math.max(Math.round(video.duration ?? 10), 1),
         zoom: [],
         caption: "",
       }));
@@ -655,7 +661,7 @@ export default function Home() {
       return {
         ...current,
         clips:
-          current.clips.length === 1 && current.clips[0].file === "clip1.mp4"
+          options.replace || (current.clips.length === 1 && current.clips[0].file === "clip1.mp4")
             ? nextClips
             : [...current.clips, ...nextClips],
       };
@@ -667,9 +673,10 @@ export default function Home() {
   }
 
   function reviewUploadedVideos(videos: UploadedVideo[]) {
-    addUploadedVideos(videos, { navigate: false });
+    addUploadedVideos(videos, { navigate: false, replace: true });
     setRecordedUpload(videos[0] ?? null);
     setEnhancement(null);
+    setJob(null);
     setUseOriginalVoice(false);
     setVoiceStatus("Generate AI content to create a clean narration script and voiceover.");
     setActiveView("post-recording");
@@ -793,6 +800,8 @@ export default function Home() {
         nextEnhancement = await enhanceRecording({
           file: recordedUpload.file,
           originalName: recordedUpload.originalName,
+          selectedSkills,
+          voice: selectedVoice,
         });
         setEnhancement(nextEnhancement);
         setTransformationStepIndex(2);
@@ -1264,6 +1273,72 @@ export default function Home() {
     );
   }
 
+  function renderGuidePanel() {
+    if (!enhancement?.guide) {
+      return null;
+    }
+
+    const guide = enhancement.guide;
+    const guideSteps = Array.isArray(guide.steps) ? guide.steps : [];
+    const guideFaqs = Array.isArray(guide.faqs) ? guide.faqs : [];
+
+    return (
+      <section className="guide-output-panel">
+        <div className="guide-output-heading">
+          <span>
+            <FileText size={16} />
+            User guide flow
+          </span>
+          <small>{guideSteps.length} steps</small>
+        </div>
+        <h3>{guide.title}</h3>
+        <p>{guide.summary}</p>
+        <div className="guide-step-list">
+          {guideSteps.map((step, index) => (
+            <article className="guide-step-item" key={`${step.title}-${index}`}>
+              <time>{formatTimelineTime(step.timestamp ?? index * 8)}</time>
+              <div>
+                <strong>{step.title}</strong>
+                <span>{step.description}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+        {guideFaqs.length ? (
+          <div className="guide-mini-section">
+            <strong>FAQs</strong>
+            {guideFaqs.slice(0, 2).map((faq) => (
+              <p key={faq.question}>
+                <b>{faq.question}</b>
+                {faq.answer}
+              </p>
+            ))}
+          </div>
+        ) : null}
+      </section>
+    );
+  }
+
+  function renderAiPlanPanel() {
+    if (!enhancement?.aiPlan.length) {
+      return null;
+    }
+
+    return (
+      <section className="ai-plan-panel">
+        <span>
+          <Sparkles size={15} />
+          Intelligent AI execution
+        </span>
+        <ol>
+          {enhancement.aiPlan.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ol>
+      </section>
+    );
+  }
+
   function renderEditor() {
     return (
       <section className="editor-page">
@@ -1645,13 +1720,15 @@ export default function Home() {
                 </div>
               ) : null}
             </div>
+            {renderAiPlanPanel()}
+            {renderGuidePanel()}
           </aside>
 
           <section className="editor-preview-panel">
             <div className="preview-stage">
               <div className="preview-shell" style={previewShellStyle}>
-                {previewUrl ? (
-                  <video className="preview-video" src={previewUrl} controls style={previewMediaStyle} />
+                {editorPreviewUrl ? (
+                  <video className="preview-video" src={editorPreviewUrl} controls style={previewMediaStyle} />
                 ) : (
                   <div className="preview-placeholder" style={previewMediaStyle}>
                     <Video size={42} />
@@ -1660,6 +1737,7 @@ export default function Home() {
                   </div>
                 )}
                 <span className="made-with">Made with Flow Studio</span>
+                {generatedVideoUrl ? <span className="generated-video-badge"><Sparkles size={14} /> AI video output</span> : null}
                 {musicEnabled ? <span className="music-badge"><Music size={14} /> {selectedMusic} · {musicVolume}</span> : null}
                 {zoomEnabled && timeline.clips.some((clip) => clip.zoom.length > 0) ? <span className="zoom-badge"><Search size={14} /> Zoom active</span> : null}
                 {avatarEnabled ? (
@@ -1720,6 +1798,19 @@ export default function Home() {
                     Download MP4
                   </a>
                 ) : null}
+              </section>
+            ) : null}
+
+            {enhancement?.finalVideoUrl ? (
+              <section className="export-ready">
+                <strong>AI generated video output ready</strong>
+                <span>
+                  Script · TTS voiceover · guide flow · rendered MP4
+                </span>
+                <a className="download-link" href={exportedMediaUrl(enhancement.finalVideoUrl)} download>
+                  <Download size={16} />
+                  Download AI MP4
+                </a>
               </section>
             ) : null}
           </section>
