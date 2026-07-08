@@ -7,6 +7,7 @@ import {
   Boxes,
   CalendarDays,
   ChevronLeft,
+  Circle,
   Clapperboard,
   Captions,
   Download,
@@ -14,6 +15,7 @@ import {
   FileText,
   HelpCircle,
   Home as HomeIcon,
+  ImageIcon,
   Info,
   LayoutTemplate,
   Languages,
@@ -34,6 +36,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Square,
+  Type,
   UserRound,
   Video,
   Volume2,
@@ -59,6 +62,14 @@ type View = "home" | "ask-ai" | "library" | "skills" | "recording" | "editor";
 type SkillTab = "video" | "doc";
 type RecordingState = "idle" | "starting" | "recording" | "processing" | "ready" | "error";
 type EditorTab = "script" | "voice" | "music" | "visuals" | "zooms" | "avatar" | "elements";
+type VisualPanel = "background" | "scenes";
+type EditorElementType = "rectangle" | "circle" | "blur" | "text" | "image";
+
+type EditorElement = {
+  id: string;
+  type: EditorElementType;
+  label: string;
+};
 
 const initialTimeline: Timeline = {
   clips: [
@@ -183,6 +194,40 @@ const editorTabs = [
   },
 ] as const;
 
+const voiceOptions = [
+  "Camila - Female, English (US), Conversational",
+  "Jenny - Female, English (US), Product demo",
+  "Aria - Female, English (US), Warm guide",
+  "Davis - Male, English (US), Confident",
+] as const;
+
+const musicTracks = [
+  "Feels",
+  "Clean Focus",
+  "Light Product",
+  "Soft Momentum",
+] as const;
+
+const backgroundPresets = [
+  "linear-gradient(135deg, #b7ecf5, #f2fbff)",
+  "linear-gradient(135deg, #ffc4dd, #ffeef6)",
+  "linear-gradient(135deg, #dce7f7, #ffc6d2)",
+  "linear-gradient(135deg, #c3eff8, #7bb7e6)",
+  "linear-gradient(135deg, #cbc7ff, #ebe9ff)",
+  "linear-gradient(135deg, #ffac9d, #b9f1ca 48%, #c3c3ff)",
+  "linear-gradient(135deg, #8bc3e8, #b9a7ed)",
+  "linear-gradient(135deg, #8fb9ff, #ffb58e 52%, #ffe4b8)",
+] as const;
+
+const avatarOptions = [
+  "linear-gradient(135deg, #e7b5a3, #6b5dd3)",
+  "linear-gradient(135deg, #d9d3c8, #8b6f56)",
+  "linear-gradient(135deg, #f3ddd3, #6950bd)",
+  "linear-gradient(135deg, #f4c7a0, #eef3ff)",
+  "linear-gradient(135deg, #e4b79e, #fbf2e9)",
+  "linear-gradient(135deg, #ffe0da, #ffffff)",
+] as const;
+
 export default function Home() {
   const [activeView, setActiveView] = useState<View>("home");
   const [skillTab, setSkillTab] = useState<SkillTab>("video");
@@ -194,6 +239,26 @@ export default function Home() {
   const [showRecordingModal, setShowRecordingModal] = useState(false);
   const [showCreateVideoModal, setShowCreateVideoModal] = useState(false);
   const [editorTab, setEditorTab] = useState<EditorTab>("script");
+  const [visualPanel, setVisualPanel] = useState<VisualPanel>("background");
+  const [useOriginalVoice, setUseOriginalVoice] = useState(false);
+  const [selectedVoice, setSelectedVoice] = useState<(typeof voiceOptions)[number]>(voiceOptions[0]);
+  const [voiceStatus, setVoiceStatus] = useState("");
+  const [musicEnabled, setMusicEnabled] = useState(true);
+  const [selectedMusic, setSelectedMusic] = useState<(typeof musicTracks)[number]>(musicTracks[0]);
+  const [musicVolume, setMusicVolume] = useState(8);
+  const [backgroundEnabled, setBackgroundEnabled] = useState(false);
+  const [selectedBackground, setSelectedBackground] = useState(0);
+  const [shadowStyle, setShadowStyle] = useState("Medium");
+  const [cornerRadius, setCornerRadius] = useState(16);
+  const [framePadding, setFramePadding] = useState(12);
+  const [zoomEnabled, setZoomEnabled] = useState(true);
+  const [avatarEnabled, setAvatarEnabled] = useState(false);
+  const [selectedAvatar, setSelectedAvatar] = useState(0);
+  const [avatarColor, setAvatarColor] = useState("#dce775");
+  const [editorElements, setEditorElements] = useState<EditorElement[]>([
+    { id: "element-blur-1", type: "blur", label: "Blur" },
+  ]);
+  const [shareStatus, setShareStatus] = useState("");
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordingError, setRecordingError] = useState("");
@@ -247,6 +312,23 @@ export default function Home() {
       };
     });
   }, [generatedScriptLines, timeline.clips]);
+
+  const previewShellStyle = {
+    background: backgroundEnabled ? backgroundPresets[selectedBackground] : "transparent",
+    borderRadius: `${cornerRadius}px`,
+    padding: backgroundEnabled ? `${framePadding}px` : "0",
+    boxShadow:
+      shadowStyle === "None"
+        ? "none"
+        : shadowStyle === "Soft"
+          ? "0 10px 26px rgba(15, 23, 42, 0.08)"
+          : "0 18px 45px rgba(15, 23, 42, 0.14)",
+  };
+
+  const previewMediaStyle = {
+    borderRadius: `${Math.max(cornerRadius - 4, 4)}px`,
+    transform: zoomEnabled && timeline.clips.some((clip) => clip.zoom.length > 0) ? "scale(1.03)" : "scale(1)",
+  };
 
   useEffect(() => {
     if (recordingState !== "recording") {
@@ -458,6 +540,7 @@ export default function Home() {
 
   function applyScriptToCaptions() {
     if (!enhancement?.script) {
+      setVoiceStatus("Record or upload a video first, then refresh voiceover.");
       return;
     }
 
@@ -469,6 +552,85 @@ export default function Home() {
       })),
     }));
     setEditorTab("script");
+    setVoiceStatus(`Voiceover prepared with ${selectedVoice.split(" - ")[0]}.`);
+  }
+
+  function addScene() {
+    setTimeline((current) => {
+      const nextOrder = current.clips.length + 1;
+      const previousEnd = current.clips.at(-1)?.trimEnd ?? 0;
+
+      return {
+        ...current,
+        clips: [
+          ...current.clips,
+          {
+            id: crypto.randomUUID(),
+            file: previewFile || "clip1.mp4",
+            order: nextOrder,
+            trimStart: previousEnd,
+            trimEnd: previousEnd + 7,
+            zoom: [],
+            caption: "Enter script text...",
+          },
+        ],
+      };
+    });
+    setEditorTab("script");
+  }
+
+  function addZoomEffect() {
+    setTimeline((current) => ({
+      ...current,
+      clips: current.clips.map((clip, index) =>
+        index === 0
+          ? {
+              ...clip,
+              zoom: [
+                ...clip.zoom,
+                {
+                  start: Math.max(clip.trimStart, 0),
+                  end: Math.max(clip.trimStart + 4, clip.trimEnd),
+                  scale: 1.18,
+                  x: 0.5,
+                  y: 0.5,
+                },
+              ],
+            }
+          : clip,
+      ),
+    }));
+    setZoomEnabled(true);
+  }
+
+  function addEditorElement(type: EditorElementType) {
+    const labels: Record<EditorElementType, string> = {
+      rectangle: "Rectangle",
+      circle: "Circle",
+      blur: "Blur",
+      text: "Text",
+      image: "Image",
+    };
+
+    setEditorElements((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        type,
+        label: labels[type],
+      },
+    ]);
+  }
+
+  async function shareProject() {
+    const shareUrl = window.location.href;
+    try {
+      await navigator.clipboard?.writeText(shareUrl);
+      setShareStatus("Share link copied");
+    } catch {
+      setShareStatus("Share link ready");
+    }
+    window.setTimeout(() => setShareStatus(""), 2200);
   }
 
   function handleFeatureAction(action: "video" | "document") {
@@ -741,29 +903,33 @@ export default function Home() {
             onChange={(event) => setProjectName(event.target.value)}
           />
           <div className="editor-top-actions">
-            <span className="view-toggle" aria-label="Editor view mode">
-              <List size={16} />
-              <Scissors size={15} />
-            </span>
-            <button className="ghost-icon" type="button" aria-label="Help" title="Help">
+            <div className="view-toggle" aria-label="Editor view mode">
+              <button type="button" aria-label="Script view" title="Script view" onClick={() => setEditorTab("script")}>
+                <List size={16} />
+              </button>
+              <button type="button" aria-label="Zoom view" title="Zoom view" onClick={() => setEditorTab("zooms")}>
+                <Scissors size={15} />
+              </button>
+            </div>
+            <button className="ghost-icon" type="button" aria-label="Help" title="Help" onClick={() => setActiveView("ask-ai")}>
               <HelpCircle size={18} />
             </button>
-            <button className="ghost-icon" type="button" aria-label="Settings" title="Settings">
+            <button className="ghost-icon" type="button" aria-label="Settings" title="Settings" onClick={() => setEditorTab("visuals")}>
               <SlidersHorizontal size={18} />
             </button>
-            <button className="ghost-icon" type="button" aria-label="Language" title="Language">
+            <button className="ghost-icon" type="button" aria-label="Language" title="Language" onClick={() => setEditorTab("voice")}>
               <Languages size={18} />
             </button>
-            <button className="ghost-icon" type="button" aria-label="More actions" title="More actions">
+            <button className="ghost-icon" type="button" aria-label="More actions" title="More actions" onClick={() => setEditorTab("elements")}>
               <MoreHorizontal size={18} />
             </button>
             <button className="secondary-button export-button" type="button" disabled={isRendering} onClick={previewRender}>
               {isRendering ? <Loader2 className="spin" size={17} /> : <Download size={17} />}
               Export
             </button>
-            <button className="primary-button share-button" type="button">
+            <button className="primary-button share-button" type="button" onClick={shareProject}>
               <Share2 size={17} />
-              Share
+              {shareStatus || "Share"}
             </button>
           </div>
         </header>
@@ -833,51 +999,274 @@ export default function Home() {
               ) : null}
 
               {editorTab === "voice" ? (
-                <div className="tab-empty">
-                  <Volume2 size={28} />
-                  <h2>AI voiceover</h2>
-                  <p>{enhancement?.voiceoverFile ? `Ready: ${enhancement.voiceoverFile}` : "Record or upload a screen flow to generate Azure or ElevenLabs narration."}</p>
-                  <button className="primary-button" type="button" onClick={applyScriptToCaptions}>Apply script</button>
+                <div className="tool-panel">
+                  <label className="toggle-row">
+                    <span>Use Original Voice</span>
+                    <input
+                      checked={useOriginalVoice}
+                      type="checkbox"
+                      onChange={(event) => setUseOriginalVoice(event.target.checked)}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Select voiceover</span>
+                    <select
+                      value={selectedVoice}
+                      onChange={(event) => setSelectedVoice(event.target.value as (typeof voiceOptions)[number])}
+                    >
+                      {voiceOptions.map((voice) => (
+                        <option key={voice} value={voice}>
+                          {voice}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button className="link-button" type="button" onClick={() => setVoiceStatus("Custom voice library will connect to saved Azure/ElevenLabs voices.")}>
+                    Manage Custom Voices
+                  </button>
+                  <button className="primary-button tool-primary" type="button" onClick={applyScriptToCaptions}>
+                    <RefreshCcw size={16} />
+                    Refresh voiceover
+                  </button>
+                  {voiceStatus || enhancement?.voiceoverFile || enhancement?.warning ? (
+                    <p className="tool-status">{voiceStatus || enhancement?.voiceoverFile || enhancement?.warning}</p>
+                  ) : null}
                 </div>
               ) : null}
 
               {editorTab === "music" ? (
-                <div className="tab-empty">
-                  <Music size={28} />
-                  <h2>Music</h2>
-                  <p>Add background music after the core video cleanup flow is locked.</p>
+                <div className="tool-panel">
+                  <label className="toggle-row">
+                    <span>Add background music</span>
+                    <input
+                      checked={musicEnabled}
+                      type="checkbox"
+                      onChange={(event) => setMusicEnabled(event.target.checked)}
+                    />
+                  </label>
+                  <label className="field-stack">
+                    <span>Select background music</span>
+                    <select
+                      disabled={!musicEnabled}
+                      value={selectedMusic}
+                      onChange={(event) => setSelectedMusic(event.target.value as (typeof musicTracks)[number])}
+                    >
+                      {musicTracks.map((track) => (
+                        <option key={track} value={track}>
+                          {track}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="range-field">
+                    <span>Modify music volume</span>
+                    <input
+                      disabled={!musicEnabled}
+                      max="10"
+                      min="0"
+                      type="range"
+                      value={musicVolume}
+                      onChange={(event) => setMusicVolume(Number(event.target.value))}
+                    />
+                    <strong>{musicVolume}</strong>
+                  </label>
+                  <p className="tool-status">
+                    {musicEnabled ? `${selectedMusic} will mix under the narration at volume ${musicVolume}.` : "Background music is off."}
+                  </p>
                 </div>
               ) : null}
 
               {editorTab === "visuals" ? (
-                <div className="tab-empty">
-                  <Captions size={28} />
-                  <h2>Captions and visuals</h2>
-                  <p>Use the script tab captions now. Branded callouts and overlays are next.</p>
+                <div className="tool-panel">
+                  <div className="subtabs">
+                    <button className={visualPanel === "background" ? "is-active" : ""} type="button" onClick={() => setVisualPanel("background")}>
+                      Background
+                    </button>
+                    <button className={visualPanel === "scenes" ? "is-active" : ""} type="button" onClick={() => setVisualPanel("scenes")}>
+                      Scenes
+                    </button>
+                  </div>
+                  {visualPanel === "background" ? (
+                    <>
+                      <label className="toggle-row">
+                        <span>Add background</span>
+                        <input
+                          checked={backgroundEnabled}
+                          type="checkbox"
+                          onChange={(event) => setBackgroundEnabled(event.target.checked)}
+                        />
+                      </label>
+                      <div className="panel-heading-row">
+                        <span>Default background</span>
+                        <button className="link-button" type="button" onClick={() => setSelectedBackground((selectedBackground + 1) % backgroundPresets.length)}>
+                          View all
+                        </button>
+                      </div>
+                      <div className="background-grid">
+                        {backgroundPresets.map((preset, index) => (
+                          <button
+                            aria-label={`Background ${index + 1}`}
+                            className={selectedBackground === index ? "is-selected" : ""}
+                            key={preset}
+                            style={{ background: preset }}
+                            type="button"
+                            onClick={() => {
+                              setBackgroundEnabled(true);
+                              setSelectedBackground(index);
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <button className="upload-background" type="button" onClick={() => setBackgroundEnabled(true)}>
+                        <Download size={18} />
+                      </button>
+                      <label className="field-stack">
+                        <span>Shadows</span>
+                        <select value={shadowStyle} onChange={(event) => setShadowStyle(event.target.value)}>
+                          <option>None</option>
+                          <option>Soft</option>
+                          <option>Medium</option>
+                        </select>
+                      </label>
+                      <label className="range-field">
+                        <span>Rounded corners</span>
+                        <input max="32" min="0" type="range" value={cornerRadius} onChange={(event) => setCornerRadius(Number(event.target.value))} />
+                        <strong>{cornerRadius}</strong>
+                      </label>
+                      <label className="range-field">
+                        <span>Padding</span>
+                        <input max="32" min="0" type="range" value={framePadding} onChange={(event) => setFramePadding(Number(event.target.value))} />
+                        <strong>{framePadding}</strong>
+                      </label>
+                    </>
+                  ) : (
+                    <div className="scene-settings">
+                      {editorScenes.map((scene, index) => (
+                        <button className="scene-setting-row" key={scene.clip.id} type="button" onClick={() => setEditorTab("script")}>
+                          <span>{index === 0 ? "Intro Scene" : `Scene ${index + 1}`}</span>
+                          <small>{Math.max(scene.clip.trimEnd - scene.clip.trimStart, 0)}s</small>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : null}
 
               {editorTab === "zooms" ? (
-                <div className="tab-empty">
-                  <Scissors size={28} />
-                  <h2>Zooms</h2>
-                  <p>Zoom keyframes are stored on each scene and will feed the FFmpeg render plan.</p>
+                <div className="tool-panel">
+                  <label className="toggle-row">
+                    <span>Add zoom effects</span>
+                    <input
+                      checked={zoomEnabled}
+                      type="checkbox"
+                      onChange={(event) => setZoomEnabled(event.target.checked)}
+                    />
+                  </label>
+                  <div className="info-box">
+                    <Info size={16} />
+                    <div>
+                      <strong>Try zoom in timeline</strong>
+                      <p>Hover over the timeline to add the zoom or click one here to edit it.</p>
+                    </div>
+                  </div>
+                  <button className="primary-button tool-primary" type="button" onClick={addZoomEffect}>
+                    <Plus size={16} />
+                    Add zoom
+                  </button>
+                  <div className="effect-list">
+                    {timeline.clips.flatMap((clip) => clip.zoom.map((zoom, index) => (
+                      <button className="effect-row" key={`${clip.id}-${index}`} type="button">
+                        <span>Zoom {index + 1}</span>
+                        <small>{formatTimelineTime(zoom.start)} - {formatTimelineTime(zoom.end)} · {zoom.scale.toFixed(2)}x</small>
+                      </button>
+                    )))}
+                  </div>
                 </div>
               ) : null}
 
               {editorTab === "avatar" ? (
-                <div className="tab-empty">
-                  <UserRound size={28} />
-                  <h2>AI avatar</h2>
-                  <p>Avatar narration can sit on top of the cleaned screen recording in a later demo step.</p>
+                <div className="tool-panel">
+                  <label className="toggle-row">
+                    <span>
+                      Enable AI avatar
+                      <small className="duration-pill">~1m</small>
+                    </span>
+                    <input
+                      checked={avatarEnabled}
+                      type="checkbox"
+                      onChange={(event) => setAvatarEnabled(event.target.checked)}
+                    />
+                  </label>
+                  <div className="panel-heading-row">
+                    <span>Select an AI avatar</span>
+                    <button className="link-button" type="button" onClick={() => setSelectedAvatar((selectedAvatar + 1) % avatarOptions.length)}>
+                      View all
+                    </button>
+                  </div>
+                  <div className="avatar-grid">
+                    {avatarOptions.map((avatar, index) => (
+                      <button
+                        aria-label={`AI avatar ${index + 1}`}
+                        className={selectedAvatar === index ? "is-selected" : ""}
+                        key={avatar}
+                        style={{ background: avatar }}
+                        type="button"
+                        onClick={() => {
+                          setAvatarEnabled(true);
+                          setSelectedAvatar(index);
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <label className="color-row">
+                    <span>Set a background color</span>
+                    <input type="color" value={avatarColor} onChange={(event) => setAvatarColor(event.target.value)} />
+                    <input value={avatarColor} onChange={(event) => setAvatarColor(event.target.value)} />
+                  </label>
+                  <button className="wide-action" type="button" onClick={() => setAvatarEnabled(true)}>
+                    Modify avatar layouts
+                    <ChevronLeft size={16} />
+                  </button>
+                  <button className="link-button" type="button" onClick={() => setAvatarEnabled(true)}>
+                    Manage Custom Avatars
+                  </button>
                 </div>
               ) : null}
 
               {editorTab === "elements" ? (
-                <div className="tab-empty">
-                  <Boxes size={28} />
-                  <h2>Elements</h2>
-                  <p>Add arrows, highlights, blur blocks, and branded badges as reusable video elements.</p>
+                <div className="tool-panel">
+                  <span className="tool-label">Add Elements</span>
+                  <div className="element-actions">
+                    <button type="button" onClick={() => addEditorElement("rectangle")}>
+                      <Square size={17} />
+                      Rectangle
+                    </button>
+                    <button type="button" onClick={() => addEditorElement("circle")}>
+                      <Circle size={17} />
+                      Circle
+                    </button>
+                    <button type="button" onClick={() => addEditorElement("blur")}>
+                      <Sparkles size={17} />
+                      Blur
+                    </button>
+                    <button type="button" onClick={() => addEditorElement("text")}>
+                      <Type size={17} />
+                      Text
+                    </button>
+                    <button type="button" onClick={() => addEditorElement("image")}>
+                      <ImageIcon size={17} />
+                      Image
+                    </button>
+                  </div>
+                  <span className="tool-label">Added Elements</span>
+                  <div className="effect-list">
+                    {editorElements.map((element) => (
+                      <button className="effect-row" key={element.id} type="button" onClick={() => setEditorElements((current) => current.filter((item) => item.id !== element.id))}>
+                        <span>{element.label}</span>
+                        <small>0:00 - 0:05 · click to remove</small>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -885,16 +1274,35 @@ export default function Home() {
 
           <section className="editor-preview-panel">
             <div className="preview-stage">
-              {previewUrl ? (
-                <video className="preview-video" src={previewUrl} controls />
-              ) : (
-                <div className="preview-placeholder">
-                  <Video size={42} />
-                  <h2>No recording loaded</h2>
-                  <p>Start recording or upload a video to preview the edited walkthrough.</p>
-                </div>
-              )}
-              {previewUrl ? <span className="made-with">Made with Flow Studio</span> : null}
+              <div className="preview-shell" style={previewShellStyle}>
+                {previewUrl ? (
+                  <video className="preview-video" src={previewUrl} controls style={previewMediaStyle} />
+                ) : (
+                  <div className="preview-placeholder" style={previewMediaStyle}>
+                    <Video size={42} />
+                    <h2>No recording loaded</h2>
+                    <p>Start recording or upload a video to preview the edited walkthrough.</p>
+                  </div>
+                )}
+                <span className="made-with">Made with Flow Studio</span>
+                {musicEnabled ? <span className="music-badge"><Music size={14} /> {selectedMusic} · {musicVolume}</span> : null}
+                {zoomEnabled && timeline.clips.some((clip) => clip.zoom.length > 0) ? <span className="zoom-badge"><Search size={14} /> Zoom active</span> : null}
+                {avatarEnabled ? (
+                  <span className="avatar-preview" style={{ background: avatarColor }}>
+                    <span style={{ background: avatarOptions[selectedAvatar] }} />
+                  </span>
+                ) : null}
+                {editorElements.map((element, index) => (
+                  <span
+                    className={`preview-element preview-element-${element.type}`}
+                    key={element.id}
+                    style={{ transform: `translate(${index * 10}px, ${index * 8}px)` }}
+                  >
+                    {element.type === "text" ? "Note" : null}
+                    {element.type === "image" ? <ImageIcon size={18} /> : null}
+                  </span>
+                ))}
+              </div>
             </div>
 
             <div className="player-bar">
@@ -917,7 +1325,7 @@ export default function Home() {
                   {formatTimelineTime(scene.startsAt)}
                 </button>
               ))}
-              <button className="add-scene-button" type="button">
+              <button className="add-scene-button" type="button" onClick={addScene}>
                 <Plus size={15} />
                 Add Scenes
               </button>
@@ -928,7 +1336,9 @@ export default function Home() {
             {job ? (
               <section className="export-ready">
                 <strong>Export preview ready</strong>
-                <span>{job.commandPreview.length} FFmpeg steps prepared for the current edit.</span>
+                <span>
+                  {job.commandPreview.length} FFmpeg steps prepared · {selectedVoice.split(" - ")[0]} · {musicEnabled ? selectedMusic : "No music"}
+                </span>
               </section>
             ) : null}
           </section>
