@@ -6,6 +6,7 @@ import {
   Bot,
   Boxes,
   CalendarDays,
+  Check,
   ChevronLeft,
   Circle,
   Clapperboard,
@@ -60,12 +61,13 @@ import type {
   UploadedVideo,
 } from "@/lib/types";
 
-type View = "home" | "ask-ai" | "library" | "skills" | "recording" | "editor";
+type View = "home" | "ask-ai" | "library" | "skills" | "recording" | "post-recording" | "editor";
 type SkillTab = "video" | "doc";
 type RecordingState = "idle" | "starting" | "recording" | "processing" | "ready" | "error";
 type EditorTab = "script" | "voice" | "music" | "visuals" | "zooms" | "avatar" | "elements";
 type VisualPanel = "background" | "scenes";
 type EditorElementType = "rectangle" | "circle" | "blur" | "text" | "image";
+type GeneratedSkill = "video" | "guide" | "assessment" | "faqs";
 
 type EditorElement = {
   id: string;
@@ -265,6 +267,9 @@ export default function Home() {
     { id: "element-blur-1", type: "blur", label: "Blur" },
   ]);
   const [shareStatus, setShareStatus] = useState("");
+  const [selectedSkills, setSelectedSkills] = useState<GeneratedSkill[]>(["video", "guide"]);
+  const [recordedUpload, setRecordedUpload] = useState<UploadedVideo | null>(null);
+  const [isGeneratingContent, setIsGeneratingContent] = useState(false);
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordingError, setRecordingError] = useState("");
@@ -564,17 +569,14 @@ export default function Home() {
       );
 
       const uploaded = await uploadVideos([recordingFile]);
-      addUploadedVideos(uploaded);
+      addUploadedVideos(uploaded, { navigate: false });
 
       if (uploaded[0]) {
-        const enhanced = await enhanceRecording({
-          file: uploaded[0].file,
-          originalName: uploaded[0].originalName,
-        });
-        setEnhancement(enhanced);
+        setRecordedUpload(uploaded[0]);
       }
 
       setRecordingState("ready");
+      setActiveView("post-recording");
     } catch (caught) {
       setRecordingState("error");
       setRecordingError(caught instanceof Error ? caught.message : "Recording upload failed.");
@@ -619,7 +621,10 @@ export default function Home() {
     }
   }
 
-  function addUploadedVideos(videos: UploadedVideo[]) {
+  function addUploadedVideos(
+    videos: UploadedVideo[],
+    options: { navigate?: boolean } = {},
+  ) {
     setTimeline((current) => {
       const nextClips = videos.map((video, index) => ({
         id: crypto.randomUUID(),
@@ -640,7 +645,9 @@ export default function Home() {
       };
     });
     setEditorTab("script");
-    setActiveView("editor");
+    if (options.navigate !== false) {
+      setActiveView("editor");
+    }
   }
 
   function applyScriptToCaptions() {
@@ -736,6 +743,47 @@ export default function Home() {
       setShareStatus("Share link ready");
     }
     window.setTimeout(() => setShareStatus(""), 2200);
+  }
+
+  function toggleGeneratedSkill(skill: GeneratedSkill) {
+    setSelectedSkills((current) =>
+      current.includes(skill)
+        ? current.filter((item) => item !== skill)
+        : [...current, skill],
+    );
+  }
+
+  async function generateAiContentFromRecording() {
+    setIsGeneratingContent(true);
+    setError("");
+    setUseOriginalVoice(false);
+
+    try {
+      let nextEnhancement = enhancement;
+      if (!nextEnhancement && recordedUpload) {
+        nextEnhancement = await enhanceRecording({
+          file: recordedUpload.file,
+          originalName: recordedUpload.originalName,
+        });
+        setEnhancement(nextEnhancement);
+      }
+
+      const script = nextEnhancement?.script || buildDefaultNarration(projectName);
+      setTimeline((current) => ({
+        ...current,
+        clips: current.clips.map((clip, index) => ({
+          ...clip,
+          caption: index === 0 ? script : clip.caption,
+        })),
+      }));
+      setVoiceStatus("AI script and voiceover are ready for review.");
+      setEditorTab("script");
+      setActiveView("editor");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "AI content generation failed.");
+    } finally {
+      setIsGeneratingContent(false);
+    }
   }
 
   function handleFeatureAction(action: "video" | "document") {
@@ -990,6 +1038,117 @@ export default function Home() {
               Back home
             </button>
           </div>
+        </div>
+      </section>
+    );
+  }
+
+  function renderPostRecording() {
+    const skillCards: Array<{
+      key: GeneratedSkill;
+      title: string;
+      icon: typeof Video;
+      estimate?: string;
+    }> = [
+      { key: "video", title: "Video", icon: Video },
+      { key: "guide", title: "Step-by-Step Guide", icon: FileText },
+      { key: "assessment", title: "Assessment", icon: FileText },
+      { key: "faqs", title: "FAQs", icon: HelpCircle },
+    ];
+
+    return (
+      <section className="post-recording-page">
+        <header className="post-recording-topbar">
+          <button className="editor-back" type="button" aria-label="Back" onClick={() => setActiveView("home")}>
+            <ChevronLeft size={19} />
+          </button>
+          <input
+            aria-label="Recording title"
+            className="editor-title-input"
+            value={projectName}
+            onChange={(event) => setProjectName(event.target.value)}
+          />
+        </header>
+
+        <div className="post-recording-shell">
+          <section className="recording-review">
+            <div className="recording-review-controls">
+              <label className="language-select">
+                <span>Input language</span>
+                <select defaultValue="English">
+                  <option>English</option>
+                  <option>Hindi</option>
+                  <option>Spanish</option>
+                </select>
+              </label>
+              <div className="review-tools">
+                <button type="button" onClick={() => setEditorTab("visuals")}>
+                  <Scissors size={16} />
+                  Crop
+                </button>
+                <button type="button" onClick={() => setEditorTab("script")}>
+                  <Scissors size={16} />
+                  Trim
+                </button>
+                <button type="button" onClick={() => setActiveView("ask-ai")}>
+                  <Languages size={16} />
+                  Translate
+                </button>
+                <button type="button" onClick={() => setEditorTab("voice")}>
+                  <Volume2 size={16} />
+                  Voice
+                </button>
+              </div>
+            </div>
+
+            <div className="recording-review-video">
+              {previewUrl ? (
+                <video src={previewUrl} controls />
+              ) : (
+                <div className="preview-placeholder">
+                  <Video size={42} />
+                  <h2>No recording loaded</h2>
+                  <p>Record your screen first, then generate AI content from the capture.</p>
+                </div>
+              )}
+              {recordingWarning ? <p className="review-warning">{recordingWarning}</p> : null}
+            </div>
+          </section>
+
+          <aside className="generate-panel">
+            <h1>What should we create from this recording?</h1>
+            <p>Choose skills to customize your AI content</p>
+
+            <div className="skill-card-grid">
+              {skillCards.map((skill) => {
+                const isSelected = selectedSkills.includes(skill.key);
+                return (
+                  <button
+                    className={`skill-select-card ${isSelected ? "is-selected" : ""}`}
+                    key={skill.key}
+                    type="button"
+                    onClick={() => toggleGeneratedSkill(skill.key)}
+                  >
+                    <skill.icon size={20} />
+                    <span>{skill.title}</span>
+                    <small className="skill-check">{isSelected ? <Check size={14} /> : null}</small>
+                  </button>
+                );
+              })}
+            </div>
+
+            <button
+              className="generate-content-button"
+              type="button"
+              disabled={isGeneratingContent || selectedSkills.length === 0}
+              onClick={generateAiContentFromRecording}
+            >
+              {isGeneratingContent ? <Loader2 className="spin" size={18} /> : <Sparkles size={18} />}
+              {isGeneratingContent ? "Generating AI Content" : "Generate AI Content"}
+            </button>
+            <p className="ai-minutes-note">~0.5 AI mins will be used</p>
+            {error ? <p className="error">{error}</p> : null}
+          </aside>
         </div>
       </section>
     );
@@ -1494,8 +1653,8 @@ export default function Home() {
         </nav>
       </aside>
 
-      <section className={`main-area ${activeView === "editor" ? "is-editor" : ""}`}>
-        {activeView !== "editor" ? (
+      <section className={`main-area ${activeView === "editor" || activeView === "post-recording" ? "is-editor" : ""}`}>
+        {activeView !== "editor" && activeView !== "post-recording" ? (
           <header className="utility-bar">
             <button className="ghost-icon" type="button" aria-label="Help" title="Help">
               <HelpCircle size={18} />
@@ -1515,9 +1674,10 @@ export default function Home() {
         {activeView === "library" ? renderLibrary() : null}
         {activeView === "skills" ? renderSkills() : null}
         {activeView === "recording" ? renderRecording() : null}
+        {activeView === "post-recording" ? renderPostRecording() : null}
         {activeView === "editor" ? renderEditor() : null}
 
-        {activeView !== "editor" ? (
+        {activeView !== "editor" && activeView !== "post-recording" ? (
           <button className="floating-send" type="button" aria-label="Ask AI" onClick={() => setActiveView("ask-ai")}>
             <Send size={19} />
           </button>
