@@ -451,6 +451,89 @@ label span {
   padding: 16px;
 }
 
+.edit-options {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.edit-option {
+  align-items: flex-start;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: #1d2430;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 126px;
+  padding: 16px;
+  text-align: left;
+}
+
+.edit-option span {
+  align-items: center;
+  background: #f2f3ff;
+  border-radius: 8px;
+  color: var(--accent);
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.edit-option strong {
+  font-size: 15px;
+}
+
+.edit-option small {
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+.edit-option.is-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(111, 121, 239, 0.12);
+}
+
+.edit-detail {
+  min-height: 118px;
+}
+
+.edit-detail h2 {
+  font-size: 18px;
+}
+
+.edit-detail p {
+  color: var(--muted);
+  line-height: 1.55;
+  margin-top: 8px;
+}
+
+.script-box {
+  background: #fbfcfe;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-top: 14px;
+  padding: 14px;
+}
+
+.script-box strong {
+  font-size: 14px;
+}
+
+.muted-note {
+  color: var(--muted);
+}
+
+.export-edit-row {
+  align-items: center;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+}
+
 label {
   display: flex;
   flex-direction: column;
@@ -1007,7 +1090,8 @@ textarea {
 @media (max-width: 1180px) {
   .feature-grid,
   .feature-grid.two-up,
-  .guide-grid {
+  .guide-grid,
+  .edit-options {
     grid-template-columns: 1fr;
   }
 

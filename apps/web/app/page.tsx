@@ -7,6 +7,7 @@ import {
   Boxes,
   CalendarDays,
   Clapperboard,
+  Captions,
   Download,
   Eye,
   FileText,
@@ -19,6 +20,7 @@ import {
   MoreHorizontal,
   Plus,
   Radio,
+  Scissors,
   Search,
   Send,
   Settings,
@@ -26,6 +28,7 @@ import {
   Sparkles,
   Square,
   Video,
+  Volume2,
   Wand2,
 } from "lucide-react";
 import { ClipList } from "@/components/clip-list";
@@ -42,6 +45,7 @@ import type {
 type View = "home" | "ask-ai" | "library" | "skills" | "recording";
 type SkillTab = "video" | "doc";
 type RecordingState = "idle" | "starting" | "recording" | "processing" | "ready" | "error";
+type EditMode = "trim" | "captions" | "cleanup" | "voiceover" | "export";
 
 const initialTimeline: Timeline = {
   clips: [
@@ -128,6 +132,39 @@ const quickGuide = [
   },
 ] as const;
 
+const editModes = [
+  {
+    key: "trim",
+    title: "Trim",
+    body: "Cut dead air and reorder clips.",
+    icon: Scissors,
+  },
+  {
+    key: "captions",
+    title: "Captions",
+    body: "Edit captions and on-screen text.",
+    icon: Captions,
+  },
+  {
+    key: "cleanup",
+    title: "AI Cleanup",
+    body: "Prepare script, cleanup plan, and polish.",
+    icon: Wand2,
+  },
+  {
+    key: "voiceover",
+    title: "Voiceover",
+    body: "Use Azure or ElevenLabs narration.",
+    icon: Volume2,
+  },
+  {
+    key: "export",
+    title: "Export",
+    body: "Generate the final MP4 package.",
+    icon: Download,
+  },
+] as const;
+
 export default function Home() {
   const [activeView, setActiveView] = useState<View>("home");
   const [skillTab, setSkillTab] = useState<SkillTab>("video");
@@ -139,6 +176,7 @@ export default function Home() {
   const [showEditor, setShowEditor] = useState(false);
   const [showRecordingModal, setShowRecordingModal] = useState(false);
   const [showCreateVideoModal, setShowCreateVideoModal] = useState(false);
+  const [editMode, setEditMode] = useState<EditMode>("trim");
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordingError, setRecordingError] = useState("");
@@ -353,6 +391,22 @@ export default function Home() {
       };
     });
     setShowEditor(true);
+    setEditMode("trim");
+  }
+
+  function applyScriptToCaptions() {
+    if (!enhancement?.script) {
+      return;
+    }
+
+    setTimeline((current) => ({
+      ...current,
+      clips: current.clips.map((clip, index) => ({
+        ...clip,
+        caption: index === 0 ? enhancement.script : clip.caption,
+      })),
+    }));
+    setEditMode("captions");
   }
 
   function handleFeatureAction(action: "video" | "document") {
@@ -601,7 +655,7 @@ export default function Home() {
               </button>
             ) : null}
             {recordingState !== "recording" ? (
-              <button className="primary-button" type="button" onClick={() => setShowEditor(true)}>
+          <button className="primary-button" type="button" onClick={() => setShowEditor(true)}>
                 Open timeline
               </button>
             ) : null}
@@ -682,6 +736,78 @@ export default function Home() {
               }
             />
           </label>
+        </section>
+
+        <section className="edit-options" aria-label="Editing options">
+          {editModes.map((mode) => (
+            <button
+              className={`edit-option ${editMode === mode.key ? "is-active" : ""}`}
+              key={mode.key}
+              type="button"
+              onClick={() => setEditMode(mode.key)}
+            >
+              <span>
+                <mode.icon size={18} />
+              </span>
+              <strong>{mode.title}</strong>
+              <small>{mode.body}</small>
+            </button>
+          ))}
+        </section>
+
+        <section className="edit-detail panel">
+          {editMode === "trim" ? (
+            <div>
+              <h2>Trim and arrange</h2>
+              <p>Use the timeline rows below to set clip start/end times, reorder clips, and remove unwanted sections.</p>
+            </div>
+          ) : null}
+          {editMode === "captions" ? (
+            <div>
+              <h2>Captions</h2>
+              <p>Edit caption text directly in the timeline. Captions will be burned into the exported video in the next render step.</p>
+            </div>
+          ) : null}
+          {editMode === "cleanup" ? (
+            <div>
+              <h2>AI cleanup</h2>
+              <p>Flow Studio prepares a cleaned-up script and render plan from your recording.</p>
+              {enhancement ? (
+                <div className="script-box">
+                  <strong>Generated script</strong>
+                  <p>{enhancement.script}</p>
+                  <button className="secondary-button" type="button" onClick={applyScriptToCaptions}>
+                    Apply to captions
+                  </button>
+                </div>
+              ) : (
+                <p className="muted-note">Record or upload a video to generate an AI cleanup plan.</p>
+              )}
+            </div>
+          ) : null}
+          {editMode === "voiceover" ? (
+            <div>
+              <h2>Voiceover</h2>
+              <p>Azure or ElevenLabs TTS runs on the backend using your local keys. Generated voiceovers appear in the AI cleanup summary.</p>
+              {enhancement?.voiceoverFile ? (
+                <p className="muted-note">Voiceover ready: {enhancement.voiceoverFile}</p>
+              ) : (
+                <p className="muted-note">{enhancement?.warning ?? "No voiceover generated yet."}</p>
+              )}
+            </div>
+          ) : null}
+          {editMode === "export" ? (
+            <div className="export-edit-row">
+              <div>
+                <h2>Export</h2>
+                <p>Preview the backend render plan now. Full MP4 render execution is the next pipeline step.</p>
+              </div>
+              <button className="primary-button" type="button" disabled={isRendering} onClick={previewRender}>
+                {isRendering ? <Loader2 className="spin" size={18} /> : <Download size={18} />}
+                Export preview
+              </button>
+            </div>
+          ) : null}
         </section>
 
         <ClipList
