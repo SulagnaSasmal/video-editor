@@ -268,9 +268,12 @@ export default function Home() {
   const [recordingState, setRecordingState] = useState<RecordingState>("idle");
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordingError, setRecordingError] = useState("");
+  const [recordingWarning, setRecordingWarning] = useState("");
   const [enhancement, setEnhancement] = useState<EnhancedRecording | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingSourceStreamsRef = useRef<MediaStream[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const recordingChunksRef = useRef<BlobPart[]>([]);
 
   const narrationScript =
@@ -373,6 +376,65 @@ export default function Home() {
   function stopStreamTracks() {
     recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
     recordingStreamRef.current = null;
+    recordingSourceStreamsRef.current.forEach((stream) => {
+      stream.getTracks().forEach((track) => track.stop());
+    });
+    recordingSourceStreamsRef.current = [];
+    if (audioContextRef.current) {
+      void audioContextRef.current.close().catch(() => undefined);
+      audioContextRef.current = null;
+    }
+  }
+
+  async function createMixedRecordingStream(
+    screenStream: MediaStream,
+    micStream: MediaStream | null,
+  ) {
+    const videoTracks = screenStream.getVideoTracks();
+    const audioStreams = [screenStream, micStream].filter(
+      (stream): stream is MediaStream => Boolean(stream?.getAudioTracks().length),
+    );
+
+    if (!audioStreams.length) {
+      return {
+        stream: new MediaStream(videoTracks),
+        warning: "No microphone or screen audio was captured. Check microphone permission before recording.",
+      };
+    }
+
+    const AudioContextConstructor =
+      window.AudioContext ||
+      (window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
+
+    if (!AudioContextConstructor) {
+      return {
+        stream: new MediaStream([
+          ...videoTracks,
+          ...audioStreams.flatMap((stream) => stream.getAudioTracks()),
+        ]),
+        warning: "Audio mixing is not available in this browser, so narration may be unreliable.",
+      };
+    }
+
+    const audioContext = new AudioContextConstructor();
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+
+    const destination = audioContext.createMediaStreamDestination();
+    audioStreams.forEach((stream) => {
+      audioContext.createMediaStreamSource(stream).connect(destination);
+    });
+
+    audioContextRef.current = audioContext;
+
+    return {
+      stream: new MediaStream([...videoTracks, ...destination.stream.getAudioTracks()]),
+      warning: micStream?.getAudioTracks().length
+        ? ""
+        : "Microphone was not available, so only screen/system audio was captured.",
+    };
   }
 
   function getRecorderMimeType() {
@@ -414,6 +476,7 @@ export default function Home() {
     setActiveView("recording");
     setRecordingState("starting");
     setRecordingError("");
+    setRecordingWarning("");
     setEnhancement(null);
     setRecordingSeconds(0);
 
@@ -436,13 +499,14 @@ export default function Home() {
         micStream = null;
       }
 
-      const combinedStream = new MediaStream([
-        ...screenStream.getVideoTracks(),
-        ...screenStream.getAudioTracks(),
-        ...(micStream?.getAudioTracks() ?? []),
-      ]);
+      recordingSourceStreamsRef.current = micStream ? [screenStream, micStream] : [screenStream];
+      const { stream: combinedStream, warning } = await createMixedRecordingStream(
+        screenStream,
+        micStream,
+      );
       recordingStreamRef.current = combinedStream;
       recordingChunksRef.current = [];
+      setRecordingWarning(warning);
 
       const mimeType = getRecorderMimeType();
       const recorder = new MediaRecorder(
@@ -893,6 +957,7 @@ export default function Home() {
             {recordingState === "processing" ? <span>Uploading recording and preparing AI cleanup...</span> : null}
             {recordingState === "ready" ? <span>Recording added to the timeline.</span> : null}
             {recordingState === "error" ? <span className="status-error">{recordingError}</span> : null}
+            {recordingWarning && recordingState !== "error" ? <span className="status-warning">{recordingWarning}</span> : null}
           </div>
           {enhancement ? (
             <div className="enhancement-card">

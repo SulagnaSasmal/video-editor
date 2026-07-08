@@ -908,6 +908,11 @@ textarea {
   color: var(--danger);
 }
 
+.status-warning {
+  color: #8a5a00;
+  font-size: 13px;
+}
+
 .enhancement-card {
   background: white;
   border: 1px solid var(--line);
