@@ -1,1 +1,1 @@
-"""Video editor MVP API package."""
+"""Video editor API package."""

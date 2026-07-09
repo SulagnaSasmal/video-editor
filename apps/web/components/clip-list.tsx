@@ -18,11 +18,17 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical, Plus, Trash2 } from "lucide-react";
-import type { Clip } from "@/lib/types";
+import type { Clip, TransitionType } from "@/lib/types";
 
 type ClipListProps = {
   clips: Clip[];
   onChange: (clips: Clip[]) => void;
+};
+
+const transitionLabels: Record<TransitionType, string> = {
+  cut: "Cut",
+  crossfade: "Crossfade (1s)",
+  fade_to_black: "Fade to black (1s)",
 };
 
 function renumber(clips: Clip[]) {
@@ -31,10 +37,12 @@ function renumber(clips: Clip[]) {
 
 function SortableClip({
   clip,
+  isLast,
   onUpdate,
   onRemove,
 }: {
   clip: Clip;
+  isLast: boolean;
   onUpdate: (clip: Clip) => void;
   onRemove: () => void;
 }) {
@@ -103,6 +111,30 @@ function SortableClip({
         />
       </label>
 
+      {!isLast ? (
+        <label className="transition-field">
+          <span>Transition to next</span>
+          <select
+            value={clip.transitionOut.type}
+            onChange={(event) =>
+              onUpdate({
+                ...clip,
+                transitionOut: {
+                  type: event.target.value as Clip["transitionOut"]["type"],
+                  duration: event.target.value === "cut" ? 0 : clip.transitionOut.duration || 1,
+                },
+              })
+            }
+          >
+            {Object.entries(transitionLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+
       <button
         className="icon-button danger"
         type="button"
@@ -147,6 +179,7 @@ export function ClipList({ clips, onChange }: ClipListProps) {
         trimEnd: 10,
         zoom: [],
         caption: "",
+        transitionOut: { type: "cut", duration: 0 },
       },
     ]);
   }
@@ -185,10 +218,11 @@ export function ClipList({ clips, onChange }: ClipListProps) {
           strategy={verticalListSortingStrategy}
         >
           <div className="clip-list">
-            {clips.map((clip) => (
+            {clips.map((clip, index) => (
               <SortableClip
                 key={clip.id}
                 clip={clip}
+                isLast={index === clips.length - 1}
                 onUpdate={updateClip}
                 onRemove={() => removeClip(clip.id)}
               />

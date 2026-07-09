@@ -6,6 +6,13 @@ export type ZoomKeyframe = {
   y: number;
 };
 
+export type TransitionType = "cut" | "crossfade" | "fade_to_black";
+
+export type TransitionSettings = {
+  type: TransitionType;
+  duration: number;
+};
+
 export type Clip = {
   id: string;
   file: string;
@@ -14,6 +21,7 @@ export type Clip = {
   trimEnd: number;
   zoom: ZoomKeyframe[];
   caption: string;
+  transitionOut: TransitionSettings;
 };
 
 export type Timeline = {
@@ -39,15 +47,37 @@ export type ProjectPayload = {
   timeline: Timeline;
 };
 
+export type Project = ProjectPayload & { id: string };
+
+export type ProjectUpdate = {
+  name?: string;
+  timeline?: Timeline;
+};
+
 export type RenderJob = {
   id: string;
   projectId: string;
+  kind: "export" | "narrate";
   status: "queued" | "running" | "completed" | "failed";
   outputFile: string | null;
   downloadUrl: string | null;
   voiceoverFile: string | null;
   commandPreview: string[];
   error: string | null;
+};
+
+export type NarrationCue = {
+  clipId: string;
+  text: string;
+  approxStartSeconds: number;
+};
+
+export type ProjectNarrationResult = {
+  script: string;
+  cueSheet: NarrationCue[];
+  voiceoverPreviewUrl: string | null;
+  provider: string | null;
+  warning: string | null;
 };
 
 export type UploadedVideo = {
@@ -72,15 +102,10 @@ export type GeneratedGuide = {
   assessment?: Array<{ question: string; answer: string }>;
 };
 
-export type EnhancedRecording = {
+export type RecordingGuide = {
   file: string;
   script: string;
-  ttsProvider: string;
-  voiceoverFile: string | null;
-  finalVideoUrl: string | null;
-  renderJobId: string | null;
   guide: GeneratedGuide | null;
   aiPlan: string[];
-  steps: string[];
   warning: string | null;
 };

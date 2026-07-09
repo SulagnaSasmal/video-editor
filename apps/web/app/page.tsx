@@ -43,19 +43,25 @@ import {
   Volume2,
   Wand2,
 } from "lucide-react";
+import { ClipList } from "@/components/clip-list";
 import { VideoDropzone } from "@/components/video-dropzone";
 import {
   createProject,
   createRenderJob,
-  enhanceRecording,
   exportedMediaUrl,
   exportProject,
+  generateRecordingGuide,
+  getProject,
+  narrateProject,
+  pollRenderJob,
+  updateProject,
   uploadVideos,
   uploadedMediaUrl,
 } from "@/lib/api";
 import type {
-  EnhancedRecording,
+  ProjectNarrationResult,
   ProjectPayload,
+  RecordingGuide,
   RenderJob,
   Timeline,
   UploadedVideo,
@@ -101,6 +107,7 @@ const initialTimeline: Timeline = {
         },
       ],
       caption: "This is the intro section",
+      transitionOut: { type: "cut", duration: 0 },
     },
   ],
   output: {
@@ -254,7 +261,7 @@ function buildDefaultNarration(name: string) {
 export default function Home() {
   const [activeView, setActiveView] = useState<View>("home");
   const [skillTab, setSkillTab] = useState<SkillTab>("video");
-  const [projectName, setProjectName] = useState("First MVP render");
+  const [projectName, setProjectName] = useState("Untitled project");
   const [timeline, setTimeline] = useState<Timeline>(initialTimeline);
   const [job, setJob] = useState<RenderJob | null>(null);
   const [error, setError] = useState("");
@@ -290,7 +297,13 @@ export default function Home() {
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordingError, setRecordingError] = useState("");
   const [recordingWarning, setRecordingWarning] = useState("");
-  const [enhancement, setEnhancement] = useState<EnhancedRecording | null>(null);
+  const [guide, setGuide] = useState<RecordingGuide | null>(null);
+  const [narrationResult, setNarrationResult] = useState<ProjectNarrationResult | null>(null);
+  const [showNarrationPrompt, setShowNarrationPrompt] = useState(false);
+  const [narrationDecided, setNarrationDecided] = useState(false);
+  const [isNarratingProject, setIsNarratingProject] = useState(false);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const projectIdRef = useRef<string | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const recordingSourceStreamsRef = useRef<MediaStream[]>([]);
@@ -298,7 +311,8 @@ export default function Home() {
   const recordingChunksRef = useRef<BlobPart[]>([]);
 
   const narrationScript =
-    enhancement?.script ||
+    narrationResult?.script ||
+    guide?.script ||
     timeline.clips.map((clip) => clip.caption.trim()).filter(Boolean).join(" ") ||
     buildDefaultNarration(projectName);
 
@@ -328,11 +342,8 @@ export default function Home() {
 
   const previewFile = realClips[0]?.file ?? "";
   const previewUrl = previewFile ? uploadedMediaUrl(previewFile) : "";
-  const generatedVideoUrl = enhancement?.finalVideoUrl
-    ? exportedMediaUrl(enhancement.finalVideoUrl)
-    : job?.status === "completed" && job.downloadUrl
-      ? exportedMediaUrl(job.downloadUrl)
-      : "";
+  const generatedVideoUrl =
+    job?.status === "completed" && job.downloadUrl ? exportedMediaUrl(job.downloadUrl) : "";
   const editorPreviewUrl = generatedVideoUrl || previewUrl;
   const totalDuration = useMemo(
     () =>
@@ -344,8 +355,8 @@ export default function Home() {
   );
 
   const generatedScriptLines = useMemo(
-    () => enhancement?.script.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map((line) => line.trim()) ?? [],
-    [enhancement],
+    () => narrationScript.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map((line) => line.trim()) ?? [],
+    [narrationScript],
   );
 
   const editorScenes = useMemo(() => {
@@ -399,6 +410,47 @@ export default function Home() {
       stopStreamTracks();
     };
   }, []);
+
+  useEffect(() => {
+    const fromQuery = new URLSearchParams(window.location.search).get("project");
+    const stored = window.localStorage.getItem("video-editor-project-id");
+    const restored = fromQuery || stored;
+    if (!restored) {
+      return;
+    }
+
+    getProject(restored)
+      .then((project) => {
+        projectIdRef.current = project.id;
+        setProjectId(project.id);
+        setProjectName(project.name);
+        setTimeline(project.timeline);
+        setNarrationDecided(project.timeline.clips.length >= 2);
+      })
+      .catch(() => {
+        window.localStorage.removeItem("video-editor-project-id");
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (realClips.length === 0) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      ensureProjectSynced().catch(() => undefined);
+    }, 800);
+
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeline]);
+
+  useEffect(() => {
+    if (!narrationDecided && realClips.length >= 2) {
+      setShowNarrationPrompt(true);
+    }
+  }, [narrationDecided, realClips.length]);
 
   function stopStreamTracks() {
     recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
@@ -504,7 +556,7 @@ export default function Home() {
     setRecordingState("starting");
     setRecordingError("");
     setRecordingWarning("");
-    setEnhancement(null);
+    setGuide(null);
     setRecordingSeconds(0);
 
     try {
@@ -608,14 +660,30 @@ export default function Home() {
     }
   }
 
+  async function ensureProjectSynced() {
+    if (projectIdRef.current) {
+      await updateProject(projectIdRef.current, { name: projectName, timeline: payload.timeline });
+      return projectIdRef.current;
+    }
+
+    const project = await createProject(payload);
+    projectIdRef.current = project.id;
+    setProjectId(project.id);
+    window.localStorage.setItem("video-editor-project-id", project.id);
+    const url = new URL(window.location.href);
+    url.searchParams.set("project", project.id);
+    window.history.replaceState({}, "", url.toString());
+    return project.id;
+  }
+
   async function previewRender() {
     setIsRendering(true);
     setError("");
     setJob(null);
 
     try {
-      const project = await createProject(payload);
-      const nextJob = await createRenderJob(project.id);
+      const id = await ensureProjectSynced();
+      const nextJob = await createRenderJob(id);
       setJob(nextJob);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Render failed");
@@ -630,17 +698,46 @@ export default function Home() {
     setJob(null);
 
     try {
-      const project = await createProject(payload);
-      const nextJob = await exportProject(project.id);
-      setJob(nextJob);
-      if (nextJob.status === "failed") {
-        setError(nextJob.error ?? "Export failed");
+      const id = await ensureProjectSynced();
+      const queuedJob = await exportProject(id);
+      setJob(queuedJob);
+      const finalJob = await pollRenderJob(queuedJob.id);
+      setJob(finalJob);
+      if (finalJob.status === "failed") {
+        setError(finalJob.error ?? "Export failed");
       }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Export failed");
     } finally {
       setIsRendering(false);
     }
+  }
+
+  async function handleNarrateProject() {
+    setIsNarratingProject(true);
+    setError("");
+
+    try {
+      const id = await ensureProjectSynced();
+      const result = await narrateProject(id);
+      setNarrationResult(result);
+      setUseOriginalVoice(false);
+      setVoiceStatus(
+        result.warning || `AI narration generated across ${realClips.length} clips.`,
+      );
+      setEditorTab("voice");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "AI narration failed.");
+    } finally {
+      setIsNarratingProject(false);
+      setNarrationDecided(true);
+      setShowNarrationPrompt(false);
+    }
+  }
+
+  function dismissNarrationPrompt() {
+    setNarrationDecided(true);
+    setShowNarrationPrompt(false);
   }
 
   function addUploadedVideos(
@@ -656,6 +753,7 @@ export default function Home() {
         trimEnd: Math.max(Math.round(video.duration ?? 10), 1),
         zoom: [],
         caption: "",
+        transitionOut: { type: "cut" as const, duration: 0 },
       }));
 
       return {
@@ -675,7 +773,7 @@ export default function Home() {
   function reviewUploadedVideos(videos: UploadedVideo[]) {
     addUploadedVideos(videos, { navigate: false, replace: true });
     setRecordedUpload(videos[0] ?? null);
-    setEnhancement(null);
+    setGuide(null);
     setJob(null);
     setUseOriginalVoice(false);
     setVoiceStatus("Generate AI content to create a clean narration script and voiceover.");
@@ -683,8 +781,8 @@ export default function Home() {
   }
 
   function applyScriptToCaptions() {
-    if (!enhancement?.script) {
-      setVoiceStatus("Record or upload a video first, then refresh voiceover.");
+    if (!guide?.script) {
+      setVoiceStatus("Record or upload a video first, then generate AI content.");
       return;
     }
 
@@ -692,11 +790,11 @@ export default function Home() {
       ...current,
       clips: current.clips.map((clip, index) => ({
         ...clip,
-        caption: index === 0 ? enhancement.script : clip.caption,
+        caption: index === 0 ? guide.script : clip.caption,
       })),
     }));
     setEditorTab("script");
-    setVoiceStatus(`Voiceover prepared with ${selectedVoice.split(" - ")[0]}.`);
+    setVoiceStatus(`Script applied to clip 1. Add more clips, then use "Add AI narration" for a whole-video voiceover.`);
   }
 
   function addScene() {
@@ -716,6 +814,7 @@ export default function Home() {
             trimEnd: previousEnd + 7,
             zoom: [],
             caption: "Enter script text...",
+            transitionOut: { type: "cut" as const, duration: 0 },
           },
         ],
       };
@@ -794,22 +893,21 @@ export default function Home() {
 
     try {
       await new Promise((resolve) => window.setTimeout(resolve, 180));
-      let nextEnhancement = enhancement;
-      if (!nextEnhancement && recordedUpload) {
+      let nextGuide = guide;
+      if (!nextGuide && recordedUpload) {
         setTransformationStepIndex(1);
-        nextEnhancement = await enhanceRecording({
+        nextGuide = await generateRecordingGuide({
           file: recordedUpload.file,
           originalName: recordedUpload.originalName,
           selectedSkills,
-          voice: selectedVoice,
         });
-        setEnhancement(nextEnhancement);
+        setGuide(nextGuide);
         setTransformationStepIndex(2);
         await new Promise((resolve) => window.setTimeout(resolve, 240));
       }
 
       setTransformationStepIndex(3);
-      const script = nextEnhancement?.script || buildDefaultNarration(projectName);
+      const script = nextGuide?.script || buildDefaultNarration(projectName);
       setTimeline((current) => ({
         ...current,
         clips: current.clips.map((clip, index) => ({
@@ -817,7 +915,9 @@ export default function Home() {
           caption: index === 0 ? script : clip.caption,
         })),
       }));
-      setVoiceStatus("AI script and voiceover are ready for review.");
+      setVoiceStatus(
+        "Script applied to clip 1. Add more clips, then use \"Add AI narration\" for a whole-video voiceover.",
+      );
       setEditorTab("script");
       await new Promise((resolve) => window.setTimeout(resolve, 220));
       setActiveView("editor");
@@ -1050,19 +1150,16 @@ export default function Home() {
             {recordingState === "error" ? <span className="status-error">{recordingError}</span> : null}
             {recordingWarning && recordingState !== "error" ? <span className="status-warning">{recordingWarning}</span> : null}
           </div>
-          {enhancement ? (
+          {guide ? (
             <div className="enhancement-card">
               <h2>AI cleanup prepared</h2>
               <ul>
-                {enhancement.steps.map((step) => (
+                {guide.aiPlan.map((step) => (
                   <li key={step}>{step}</li>
                 ))}
               </ul>
-              <p>{enhancement.script}</p>
-              {enhancement.voiceoverFile ? (
-                <small>Voiceover generated with {enhancement.ttsProvider}: {enhancement.voiceoverFile}</small>
-              ) : null}
-              {enhancement.warning ? <small>{enhancement.warning}</small> : null}
+              <p>{guide.script}</p>
+              {guide.warning ? <small>{guide.warning}</small> : null}
             </div>
           ) : null}
           <div className="recording-actions">
@@ -1274,13 +1371,13 @@ export default function Home() {
   }
 
   function renderGuidePanel() {
-    if (!enhancement?.guide) {
+    if (!guide?.guide) {
       return null;
     }
 
-    const guide = enhancement.guide;
-    const guideSteps = Array.isArray(guide.steps) ? guide.steps : [];
-    const guideFaqs = Array.isArray(guide.faqs) ? guide.faqs : [];
+    const guideData = guide.guide;
+    const guideSteps = Array.isArray(guideData.steps) ? guideData.steps : [];
+    const guideFaqs = Array.isArray(guideData.faqs) ? guideData.faqs : [];
 
     return (
       <section className="guide-output-panel">
@@ -1291,8 +1388,8 @@ export default function Home() {
           </span>
           <small>{guideSteps.length} steps</small>
         </div>
-        <h3>{guide.title}</h3>
-        <p>{guide.summary}</p>
+        <h3>{guideData.title}</h3>
+        <p>{guideData.summary}</p>
         <div className="guide-step-list">
           {guideSteps.map((step, index) => (
             <article className="guide-step-item" key={`${step.title}-${index}`}>
@@ -1320,7 +1417,7 @@ export default function Home() {
   }
 
   function renderAiPlanPanel() {
-    if (!enhancement?.aiPlan.length) {
+    if (!guide?.aiPlan.length) {
       return null;
     }
 
@@ -1331,7 +1428,7 @@ export default function Home() {
           Intelligent AI execution
         </span>
         <ol>
-          {enhancement.aiPlan.map((item) => (
+          {guide.aiPlan.map((item) => (
             <li key={item}>{item}</li>
           ))}
         </ol>
@@ -1418,6 +1515,7 @@ export default function Home() {
                       <Search size={16} />
                     </button>
                   </div>
+                  <ClipList clips={timeline.clips} onChange={(clips) => setTimeline({ ...timeline, clips })} />
                   <div className="scene-list">
                     {editorScenes.map((scene) => (
                       <article className="scene-row" key={scene.clip.id}>
@@ -1439,10 +1537,21 @@ export default function Home() {
                       </article>
                     ))}
                   </div>
-                  {enhancement ? (
+                  {guide ? (
                     <button className="refresh-voiceover" type="button" onClick={applyScriptToCaptions}>
                       <RefreshCcw size={16} />
                       Refresh voiceover
+                    </button>
+                  ) : null}
+                  {realClips.length >= 2 ? (
+                    <button
+                      className="refresh-voiceover"
+                      type="button"
+                      disabled={isNarratingProject}
+                      onClick={handleNarrateProject}
+                    >
+                      {isNarratingProject ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
+                      Add AI narration across all clips
                     </button>
                   ) : null}
                 </>
@@ -1474,12 +1583,17 @@ export default function Home() {
                   <button className="link-button" type="button" onClick={() => setVoiceStatus("Custom voice library will connect to saved Azure/ElevenLabs voices.")}>
                     Manage Custom Voices
                   </button>
-                  <button className="primary-button tool-primary" type="button" onClick={applyScriptToCaptions}>
-                    <RefreshCcw size={16} />
-                    Refresh voiceover
+                  <button
+                    className="primary-button tool-primary"
+                    type="button"
+                    disabled={isNarratingProject}
+                    onClick={handleNarrateProject}
+                  >
+                    {isNarratingProject ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+                    {realClips.length >= 2 ? "Generate whole-video narration" : "Refresh voiceover"}
                   </button>
-                  {voiceStatus || enhancement?.voiceoverFile || enhancement?.warning ? (
-                    <p className="tool-status">{voiceStatus || enhancement?.voiceoverFile || enhancement?.warning}</p>
+                  {voiceStatus || narrationResult?.warning ? (
+                    <p className="tool-status">{voiceStatus || narrationResult?.warning}</p>
                   ) : null}
                 </div>
               ) : null}
@@ -1801,18 +1915,6 @@ export default function Home() {
               </section>
             ) : null}
 
-            {enhancement?.finalVideoUrl ? (
-              <section className="export-ready">
-                <strong>AI generated video output ready</strong>
-                <span>
-                  Script · TTS voiceover · guide flow · rendered MP4
-                </span>
-                <a className="download-link" href={exportedMediaUrl(enhancement.finalVideoUrl)} download>
-                  <Download size={16} />
-                  Download AI MP4
-                </a>
-              </section>
-            ) : null}
           </section>
         </div>
       </section>
@@ -1942,6 +2044,27 @@ export default function Home() {
                 }} />
               </div>
             </div>
+          </section>
+        </div>
+      ) : null}
+
+      {showNarrationPrompt ? (
+        <div className="modal-backdrop" role="presentation">
+          <section className="recording-modal" role="dialog" aria-modal="true" aria-labelledby="narration-prompt-title">
+            <span className="modal-info-icon">
+              <Sparkles size={32} />
+            </span>
+            <h2 id="narration-prompt-title">Add AI narration?</h2>
+            <p>
+              Your clips are stitched into one project. Generate a single, coherent AI voiceover across all{" "}
+              {realClips.length} clips with smooth transitions between them?
+            </p>
+            <button className="create-button" type="button" disabled={isNarratingProject} onClick={handleNarrateProject}>
+              {isNarratingProject ? "Generating narration..." : "Yes, add AI narration"}
+            </button>
+            <button className="secondary-button" type="button" onClick={dismissNarrationPrompt}>
+              Not now
+            </button>
           </section>
         </div>
       ) : null}

@@ -8,11 +8,25 @@ from uuid import UUID, uuid4
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlmodel import Session
 
-from .models import EnhancedRecording, EnhanceRequest, Project, ProjectCreate, RenderJob, UploadedVideo
+from . import db, repository
+from .models import (
+    JobKind,
+    JobStatus,
+    NarrationCue,
+    Project,
+    ProjectCreate,
+    ProjectNarrationResult,
+    ProjectUpdate,
+    RecordingGuide,
+    RecordingGuideRequest,
+    RenderJob,
+    UploadedVideo,
+)
 from .render import build_render_commands, command_preview, run_render_commands
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
@@ -22,7 +36,7 @@ load_dotenv(ROOT_DIR / ".env")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Video Editor MVP API", version="0.1.0")
+app = FastAPI(title="Video Editor API", version="0.1.0")
 app.mount("/media/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 app.mount("/media/exports", StaticFiles(directory=EXPORT_DIR), name="exports")
 
@@ -38,9 +52,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-projects: dict[UUID, Project] = {}
-jobs: dict[UUID, RenderJob] = {}
 
 
 def probe_video_duration(path: Path) -> float | None:
@@ -132,11 +143,39 @@ def parse_ai_json(text: str) -> dict:
         return json.loads(text[start : end + 1])
 
 
+def call_anthropic(prompt: str, max_tokens: int = 1600) -> str:
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+
+    response = httpx.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": os.environ.get("ANTHROPIC_MODEL") or "claude-3-5-sonnet-20241022",
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return "".join(
+        part.get("text", "")
+        for part in payload.get("content", [])
+        if part.get("type") == "text"
+    ).strip()
+
+
 def build_ai_content(original_name: str, selected_skills: list[str]) -> tuple[str, dict, list[str], str | None]:
     fallback_script = build_ai_script(original_name)
     fallback_guide = build_fallback_guide(original_name, fallback_script)
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
         return fallback_script, fallback_guide, [
             "Analyze the captured workflow",
             "Create a concise narration script",
@@ -153,28 +192,7 @@ def build_ai_content(original_name: str, selected_skills: list[str]) -> tuple[st
         f"Requested outputs: {', '.join(selected_skills or ['video', 'guide'])}."
     )
     try:
-        response = httpx.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": os.environ.get("ANTHROPIC_MODEL") or "claude-3-5-sonnet-20241022",
-                "max_tokens": 1600,
-                "temperature": 0.3,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        text = "".join(
-            part.get("text", "")
-            for part in payload.get("content", [])
-            if part.get("type") == "text"
-        ).strip()
+        text = call_anthropic(prompt)
         parsed = parse_ai_json(text)
         script = str(parsed.get("script") or fallback_script).strip()
         guide = parsed.get("guide") if isinstance(parsed.get("guide"), dict) else fallback_guide
@@ -192,6 +210,57 @@ def build_ai_content(original_name: str, selected_skills: list[str]) -> tuple[st
             "Generate fallback documentation guide",
             "Prepare the video for export",
         ], f"AI planning used fallback content: {exc}"
+
+
+def _build_cue_sheet_from_script(project: Project, script: str) -> list[dict]:
+    cursor = 0.0
+    cue_sheet = []
+    for clip in project.timeline.clips:
+        duration = max((clip.trimEnd or clip.trimStart + 8) - clip.trimStart, 0)
+        cue_sheet.append(
+            {
+                "clipId": clip.id,
+                "text": clip.caption.strip() or script,
+                "approxStartSeconds": round(cursor, 2),
+            }
+        )
+        cursor += duration
+    return cue_sheet
+
+
+def build_project_narration(project: Project) -> tuple[str, list[dict], str | None]:
+    clips_summary = "\n".join(
+        f"{index + 1}. duration={max((clip.trimEnd or clip.trimStart + 8) - clip.trimStart, 0):.1f}s"
+        + (f" caption={clip.caption.strip()!r}" if clip.caption.strip() else "")
+        for index, clip in enumerate(project.timeline.clips)
+    )
+    fallback_script = " ".join(
+        clip.caption.strip() for clip in project.timeline.clips if clip.caption.strip()
+    ) or build_ai_script(project.name)
+    fallback_cue_sheet = _build_cue_sheet_from_script(project, fallback_script)
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return (
+            fallback_script,
+            fallback_cue_sheet,
+            "No ANTHROPIC_API_KEY configured; using a script assembled from clip captions",
+        )
+
+    prompt = (
+        "You are writing one continuous voiceover narration script that will play over a "
+        "multi-clip stitched video, in the order given. Return only JSON with keys: script, cueSheet. "
+        "cueSheet must be a list with one object per clip below, in the same order, each with "
+        "clipId, text, and approxStartSeconds. "
+        f"Project name: {project.name}. Clips in order:\n{clips_summary}"
+    )
+    try:
+        text = call_anthropic(prompt)
+        parsed = parse_ai_json(text)
+        script = str(parsed.get("script") or fallback_script).strip()
+        cue_sheet = parsed.get("cueSheet") if isinstance(parsed.get("cueSheet"), list) else fallback_cue_sheet
+        return script, cue_sheet, None
+    except Exception as exc:
+        return fallback_script, fallback_cue_sheet, f"AI narration used fallback content: {exc}"
 
 
 def choose_tts_provider(requested: str | None) -> str:
@@ -237,7 +306,7 @@ def synthesize_azure(script: str, output_path: Path, voice: str | None = None) -
             "Ocp-Apim-Subscription-Key": key,
             "Content-Type": "application/ssml+xml",
             "X-Microsoft-OutputFormat": "audio-24khz-48kbitrate-mono-mp3",
-            "User-Agent": "video-editor-mvp",
+            "User-Agent": "video-editor",
         },
         content=ssml.encode("utf-8"),
         timeout=30,
@@ -310,6 +379,48 @@ def synthesize_project_voiceover(project: Project) -> tuple[Path | None, str, st
     return output_path, provider, None
 
 
+def run_export_job(job_id: UUID, project_id: UUID) -> None:
+    with Session(db.engine) as session:
+        project = repository.get_project(session, project_id)
+        job = repository.get_job(session, job_id)
+        if project is None or job is None:
+            return
+
+        job.status = JobStatus.running
+        repository.save_job(session, job)
+
+        voiceover_path, provider, warning = synthesize_project_voiceover(project)
+        commands = build_render_commands(
+            project.id,
+            project.timeline,
+            UPLOAD_DIR,
+            EXPORT_DIR,
+            voiceover_path=voiceover_path,
+        )
+        output_file = EXPORT_DIR / f"{project.id}.{project.timeline.output.format}"
+        job.outputFile = str(output_file)
+        job.downloadUrl = f"/media/exports/{output_file.name}"
+        job.voiceoverFile = voiceover_path.name if voiceover_path else None
+        job.commandPreview = command_preview(commands)
+
+        if warning:
+            job.status = JobStatus.failed
+            job.error = warning
+            repository.save_job(session, job)
+            return
+
+        try:
+            run_render_commands(commands)
+        except Exception as exc:
+            job.status = JobStatus.failed
+            job.error = str(exc)
+            repository.save_job(session, job)
+            return
+
+        job.status = JobStatus.completed
+        repository.save_job(session, job)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -351,128 +462,53 @@ def upload_videos(files: list[UploadFile] = File(...)):
     return uploaded
 
 
-@app.post("/ai/enhance", response_model=EnhancedRecording)
-def enhance_recording(payload: EnhanceRequest):
+@app.post("/ai/guide", response_model=RecordingGuide)
+def generate_guide(payload: RecordingGuideRequest):
     source = UPLOAD_DIR / payload.file
     if not source.exists():
         raise HTTPException(status_code=404, detail="recording not found")
 
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     script, guide, ai_plan, ai_warning = build_ai_content(
         payload.originalName or payload.file,
         payload.selectedSkills,
     )
-    provider = choose_tts_provider(payload.ttsProvider)
-    steps = [
-        "Screen recording uploaded",
-        "AI workflow analysis completed",
-        "User guide flow generated",
-        "AI narration script generated",
-    ]
-    warnings = [ai_warning] if ai_warning else []
-    voiceover_file: str | None = None
-    voiceover_path: Path | None = None
-
-    if provider != "none":
-        output_name = f"{Path(payload.file).stem}-voiceover.mp3"
-        output_path = EXPORT_DIR / output_name
-        try:
-            if provider == "azure":
-                synthesize_azure(script, output_path, payload.voice)
-            else:
-                synthesize_elevenlabs(script, output_path, payload.voice)
-            voiceover_file = output_name
-            voiceover_path = output_path
-            steps.append(f"{provider} TTS voiceover generated")
-        except Exception as exc:
-            warnings.append(f"TTS generation skipped: {exc}")
-            steps.append("TTS voiceover needs attention")
-    else:
-        warnings.append("No TTS provider credentials are configured")
-        steps.append("TTS voiceover needs credentials")
-
-    duration = probe_video_duration(source) or 10
-    caption = script.split(".")[0][:180]
-    project = Project(
-        name=Path(payload.originalName or payload.file).stem or "AI generated walkthrough",
-        timeline={
-            "clips": [
-                {
-                    "file": payload.file,
-                    "order": 1,
-                    "trimStart": 0,
-                    "trimEnd": duration,
-                    "zoom": [{"start": 0, "end": min(duration, 6), "scale": 1.04, "x": 0.5, "y": 0.5}],
-                    "caption": caption,
-                }
-            ],
-            "output": {"resolution": "1920x1080", "fps": 30, "format": "mp4"},
-            "narration": {
-                "enabled": True,
-                "provider": provider,
-                "script": script,
-                "voice": payload.voice or "Jenny - Female, English (US), Product demo",
-                "useOriginalAudio": False,
-                "backgroundMusic": False,
-                "musicVolume": 0,
-            },
-        },
-    )
-    commands = build_render_commands(project.id, project.timeline, UPLOAD_DIR, EXPORT_DIR, voiceover_path=voiceover_path)
-    output_file = EXPORT_DIR / f"{project.id}.{project.timeline.output.format}"
-    job = RenderJob(
-        projectId=project.id,
-        status="running",
-        outputFile=str(output_file),
-        downloadUrl=f"/media/exports/{output_file.name}",
-        voiceoverFile=voiceover_file,
-        commandPreview=command_preview(commands),
-    )
-    projects[project.id] = project
-    jobs[job.id] = job
-    final_video_url: str | None = None
-    try:
-        run_render_commands(commands)
-        job.status = "completed"
-        final_video_url = job.downloadUrl
-        steps.append("AI generated video rendered")
-    except Exception as exc:
-        job.status = "failed"
-        job.error = str(exc)
-        warnings.append(f"AI video render failed: {exc}")
-
-    return EnhancedRecording(
-        file=payload.file,
-        script=script,
-        ttsProvider=provider,
-        voiceoverFile=voiceover_file,
-        finalVideoUrl=final_video_url,
-        renderJobId=job.id,
-        guide=guide,
-        aiPlan=ai_plan,
-        steps=steps,
-        warning=" ".join(warnings) if warnings else None,
-    )
+    return RecordingGuide(file=payload.file, script=script, guide=guide, aiPlan=ai_plan, warning=ai_warning)
 
 
 @app.post("/projects", response_model=Project)
-def create_project(payload: ProjectCreate):
+def create_project_endpoint(payload: ProjectCreate, session: Session = Depends(db.get_session)):
     project = Project(**payload.model_dump())
-    projects[project.id] = project
-    return project
+    return repository.create_project(session, project)
+
+
+@app.get("/projects", response_model=list[Project])
+def list_projects_endpoint(session: Session = Depends(db.get_session)):
+    return repository.list_projects(session)
 
 
 @app.get("/projects/{project_id}", response_model=Project)
-def get_project(project_id: UUID):
-    project = projects.get(project_id)
+def get_project_endpoint(project_id: UUID, session: Session = Depends(db.get_session)):
+    project = repository.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return project
+
+
+@app.patch("/projects/{project_id}", response_model=Project)
+def update_project_endpoint(
+    project_id: UUID,
+    payload: ProjectUpdate,
+    session: Session = Depends(db.get_session),
+):
+    project = repository.update_project(session, project_id, name=payload.name, timeline=payload.timeline)
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
     return project
 
 
 @app.post("/projects/{project_id}/render", response_model=RenderJob)
-def create_render_job(project_id: UUID):
-    project = projects.get(project_id)
+def create_render_job(project_id: UUID, session: Session = Depends(db.get_session)):
+    project = repository.get_project(session, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
 
@@ -482,54 +518,59 @@ def create_render_job(project_id: UUID):
         outputFile=str(EXPORT_DIR / f"{project.id}.{project.timeline.output.format}"),
         commandPreview=command_preview(commands),
     )
-    jobs[job.id] = job
-    return job
+    return repository.save_job(session, job)
 
 
-@app.post("/projects/{project_id}/export", response_model=RenderJob)
-def export_project(project_id: UUID):
-    project = projects.get(project_id)
+@app.post("/projects/{project_id}/narrate", response_model=ProjectNarrationResult)
+def narrate_project(project_id: UUID, session: Session = Depends(db.get_session)):
+    project = repository.get_project(session, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
 
-    voiceover_path, provider, warning = synthesize_project_voiceover(project)
-    commands = build_render_commands(
-        project.id,
-        project.timeline,
-        UPLOAD_DIR,
-        EXPORT_DIR,
-        voiceover_path=voiceover_path,
+    script, cue_sheet_raw, ai_warning = build_project_narration(project)
+    cue_sheet = [NarrationCue(**cue) for cue in cue_sheet_raw]
+
+    narration_with_script = project.timeline.narration.model_copy(update={"script": script})
+    timeline_with_script = project.timeline.model_copy(update={"narration": narration_with_script})
+    project = repository.update_project(session, project.id, timeline=timeline_with_script)
+
+    voiceover_path, provider, tts_warning = synthesize_project_voiceover(project)
+    voiceover_url: str | None = None
+    if voiceover_path:
+        voiceover_url = f"/media/exports/{voiceover_path.name}"
+        narration_with_provider = project.timeline.narration.model_copy(update={"provider": provider})
+        timeline_with_provider = project.timeline.model_copy(update={"narration": narration_with_provider})
+        repository.update_project(session, project.id, timeline=timeline_with_provider)
+
+    warning = " ".join(filter(None, [ai_warning, tts_warning])) or None
+    return ProjectNarrationResult(
+        script=script,
+        cueSheet=cue_sheet,
+        voiceoverPreviewUrl=voiceover_url,
+        provider=provider,
+        warning=warning,
     )
-    output_file = EXPORT_DIR / f"{project.id}.{project.timeline.output.format}"
-    job = RenderJob(
-        projectId=project.id,
-        status="running",
-        outputFile=str(output_file),
-        downloadUrl=f"/media/exports/{output_file.name}",
-        voiceoverFile=voiceover_path.name if voiceover_path else None,
-        commandPreview=command_preview(commands),
-        error=warning,
-    )
-    jobs[job.id] = job
 
-    if warning:
-        job.status = "failed"
-        return job
 
-    try:
-        run_render_commands(commands)
-    except Exception as exc:
-        job.status = "failed"
-        job.error = str(exc)
-        return job
+@app.post("/projects/{project_id}/export", response_model=RenderJob)
+def export_project(
+    project_id: UUID,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(db.get_session),
+):
+    project = repository.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
 
-    job.status = "completed"
+    job = RenderJob(projectId=project.id, kind=JobKind.export, status=JobStatus.queued)
+    job = repository.save_job(session, job)
+    background_tasks.add_task(run_export_job, job.id, project.id)
     return job
 
 
 @app.get("/jobs/{job_id}", response_model=RenderJob)
-def get_render_job(job_id: UUID):
-    job = jobs.get(job_id)
+def get_render_job(job_id: UUID, session: Session = Depends(db.get_session)):
+    job = repository.get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     return job

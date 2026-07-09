@@ -1,14 +1,17 @@
 [project]
-name = "video-editor-mvp-api"
+name = "video-editor-api"
 version = "0.1.0"
-description = "FastAPI backend for a JSON-driven video editor MVP."
+description = "FastAPI backend for a JSON-driven video editor."
 requires-python = ">=3.11"
 dependencies = [
+  "alembic>=1.13.0",
   "fastapi>=0.111.0",
   "httpx>=0.27.0",
+  "psycopg[binary]>=3.1.0",
   "pydantic>=2.7.0",
   "python-dotenv>=1.0.1",
   "python-multipart>=0.0.9",
+  "sqlmodel>=0.0.21",
   "uvicorn[standard]>=0.30.0",
 ]
 

@@ -3,7 +3,12 @@ from shlex import quote
 import subprocess
 from uuid import UUID
 
-from .models import Clip, Timeline
+from .models import Clip, Timeline, TransitionSettings, TransitionType
+
+_XFADE_TRANSITION = {
+    TransitionType.crossfade: "fade",
+    TransitionType.fade_to_black: "fadeblack",
+}
 
 
 def _clip_duration_arg(clip: Clip) -> list[str]:
@@ -62,6 +67,95 @@ def _video_filter(clip: Clip, resolution: str, fps: int) -> str:
     return ",".join(filters)
 
 
+def _clip_duration(clip: Clip) -> float:
+    return max((clip.trimEnd or clip.trimStart + 8) - clip.trimStart, 0)
+
+
+def _append_xfade_chain(
+    project_id: UUID,
+    clips: list[Clip],
+    normalized_files: list[Path],
+    boundaries: list[TransitionSettings],
+    export_dir: Path,
+    commands: list[list[str]],
+) -> Path:
+    accumulator = normalized_files[0]
+    accumulator_duration = _clip_duration(clips[0])
+
+    for index, boundary in enumerate(boundaries):
+        next_file = normalized_files[index + 1]
+        stage_file = export_dir / f"{project_id}-xfade-{index:03d}.mp4"
+
+        if boundary.type == TransitionType.cut:
+            commands.append(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(accumulator),
+                    "-i",
+                    str(next_file),
+                    "-filter_complex",
+                    "[0:v][1:v]concat=n=2:v=1:a=0[v];[0:a][1:a]concat=n=2:v=0:a=1[a]",
+                    "-map",
+                    "[v]",
+                    "-map",
+                    "[a]",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-crf",
+                    "21",
+                    "-c:a",
+                    "aac",
+                    "-movflags",
+                    "+faststart",
+                    str(stage_file),
+                ]
+            )
+            accumulator_duration += _clip_duration(clips[index + 1])
+        else:
+            duration = boundary.duration
+            offset = max(accumulator_duration - duration, 0)
+            transition = _XFADE_TRANSITION[boundary.type]
+            commands.append(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    str(accumulator),
+                    "-i",
+                    str(next_file),
+                    "-filter_complex",
+                    (
+                        f"[0:v][1:v]xfade=transition={transition}:duration={duration:.3f}:offset={offset:.3f}[v];"
+                        f"[0:a][1:a]acrossfade=d={duration:.3f}[a]"
+                    ),
+                    "-map",
+                    "[v]",
+                    "-map",
+                    "[a]",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-crf",
+                    "21",
+                    "-c:a",
+                    "aac",
+                    "-movflags",
+                    "+faststart",
+                    str(stage_file),
+                ]
+            )
+            accumulator_duration = offset + _clip_duration(clips[index + 1])
+
+        accumulator = stage_file
+
+    return accumulator
+
+
 def build_render_commands(
     project_id: UUID,
     timeline: Timeline,
@@ -107,29 +201,37 @@ def build_render_commands(
         ]
         commands.append(command)
 
-    concat_file = export_dir / f"{project_id}-concat.txt"
-    concat_file.write_text(
-        "\n".join(f"file '{path.as_posix()}'" for path in normalized_files),
-        encoding="utf-8",
-    )
-    stitched_file = export_dir / f"{project_id}-stitched.mp4"
-    commands.append(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_file),
-            "-c",
-            "copy",
-            "-movflags",
-            "+faststart",
-            str(stitched_file),
-        ]
-    )
+    boundaries = [clip.transitionOut for clip in timeline.clips[:-1]]
+    has_transitions = any(boundary.type != TransitionType.cut for boundary in boundaries)
+
+    if not has_transitions:
+        concat_file = export_dir / f"{project_id}-concat.txt"
+        concat_file.write_text(
+            "\n".join(f"file '{path.as_posix()}'" for path in normalized_files),
+            encoding="utf-8",
+        )
+        stitched_file = export_dir / f"{project_id}-stitched.mp4"
+        commands.append(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(concat_file),
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                str(stitched_file),
+            ]
+        )
+    else:
+        stitched_file = _append_xfade_chain(
+            project_id, timeline.clips, normalized_files, boundaries, export_dir, commands
+        )
 
     final_file = export_dir / f"{project_id}.{output.format}"
     if voiceover_path:
@@ -236,10 +338,13 @@ def build_fallback_voiceover_command(
 
 
 def timeline_duration(timeline: Timeline) -> float:
-    return sum(
-        max((clip.trimEnd or clip.trimStart + 8) - clip.trimStart, 0)
-        for clip in timeline.clips
+    total = sum(_clip_duration(clip) for clip in timeline.clips)
+    overlap = sum(
+        clip.transitionOut.duration
+        for clip in timeline.clips[:-1]
+        if clip.transitionOut.type != TransitionType.cut
     )
+    return max(total - overlap, 0)
 
 
 def command_preview(commands: list[list[str]]) -> list[str]:

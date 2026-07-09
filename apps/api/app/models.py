@@ -33,6 +33,17 @@ class ZoomKeyframe(BaseModel):
         return value
 
 
+class TransitionType(StrEnum):
+    cut = "cut"
+    crossfade = "crossfade"
+    fade_to_black = "fade_to_black"
+
+
+class TransitionSettings(BaseModel):
+    type: TransitionType = TransitionType.cut
+    duration: Annotated[float, Field(ge=0, le=3)] = 0
+
+
 class Clip(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     file: str
@@ -41,6 +52,7 @@ class Clip(BaseModel):
     trimEnd: Annotated[float | None, Field(gt=0)] = None
     zoom: list[ZoomKeyframe] = Field(default_factory=list)
     caption: str = ""
+    transitionOut: TransitionSettings = Field(default_factory=TransitionSettings)
 
     @field_validator("file")
     @classmethod
@@ -97,9 +109,20 @@ class Project(ProjectCreate):
     id: UUID = Field(default_factory=uuid4)
 
 
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    timeline: Timeline | None = None
+
+
+class JobKind(StrEnum):
+    export = "export"
+    narrate = "narrate"
+
+
 class RenderJob(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     projectId: UUID
+    kind: JobKind = JobKind.export
     status: JobStatus = JobStatus.queued
     outputFile: str | None = None
     downloadUrl: str | None = None
@@ -116,12 +139,10 @@ class UploadedVideo(BaseModel):
     duration: float | None = None
 
 
-class EnhanceRequest(BaseModel):
+class RecordingGuideRequest(BaseModel):
     file: str
     originalName: str = ""
-    ttsProvider: str | None = None
     selectedSkills: list[str] = Field(default_factory=lambda: ["video", "guide"])
-    voice: str | None = None
 
     @field_validator("file")
     @classmethod
@@ -132,14 +153,23 @@ class EnhanceRequest(BaseModel):
         return value
 
 
-class EnhancedRecording(BaseModel):
+class RecordingGuide(BaseModel):
     file: str
     script: str
-    ttsProvider: str
-    voiceoverFile: str | None = None
-    finalVideoUrl: str | None = None
-    renderJobId: UUID | None = None
     guide: dict | None = None
     aiPlan: list[str] = Field(default_factory=list)
-    steps: list[str] = Field(default_factory=list)
+    warning: str | None = None
+
+
+class NarrationCue(BaseModel):
+    clipId: str
+    text: str
+    approxStartSeconds: float = 0
+
+
+class ProjectNarrationResult(BaseModel):
+    script: str
+    cueSheet: list[NarrationCue] = Field(default_factory=list)
+    voiceoverPreviewUrl: str | None = None
+    provider: str | None = None
     warning: str | None = None
