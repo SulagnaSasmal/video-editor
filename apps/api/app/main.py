@@ -14,7 +14,10 @@ from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session
 
 from . import db, repository
+from .chat_ops import apply_chat_ops
 from .models import (
+    ChatEditRequest,
+    ChatEditResult,
     JobKind,
     JobStatus,
     NarrationCue,
@@ -156,9 +159,8 @@ def call_anthropic(prompt: str, max_tokens: int = 1600) -> str:
             "content-type": "application/json",
         },
         json={
-            "model": os.environ.get("ANTHROPIC_MODEL") or "claude-3-5-sonnet-20241022",
+            "model": os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-5",
             "max_tokens": max_tokens,
-            "temperature": 0.3,
             "messages": [{"role": "user", "content": prompt}],
         },
         timeout=30,
@@ -248,19 +250,61 @@ def build_project_narration(project: Project) -> tuple[str, list[dict], str | No
 
     prompt = (
         "You are writing one continuous voiceover narration script that will play over a "
-        "multi-clip stitched video, in the order given. Return only JSON with keys: script, cueSheet. "
-        "cueSheet must be a list with one object per clip below, in the same order, each with "
-        "clipId, text, and approxStartSeconds. "
+        "multi-clip stitched video, in the order given. Return only JSON with one key: script "
+        "(a single string covering the whole video, not per-clip). "
         f"Project name: {project.name}. Clips in order:\n{clips_summary}"
     )
     try:
         text = call_anthropic(prompt)
         parsed = parse_ai_json(text)
         script = str(parsed.get("script") or fallback_script).strip()
-        cue_sheet = parsed.get("cueSheet") if isinstance(parsed.get("cueSheet"), list) else fallback_cue_sheet
+        # cueSheet timing depends on real clip durations, which the model can't compute
+        # reliably, so it's always derived server-side from the final script/captions.
+        cue_sheet = _build_cue_sheet_from_script(project, script)
         return script, cue_sheet, None
     except Exception as exc:
         return fallback_script, fallback_cue_sheet, f"AI narration used fallback content: {exc}"
+
+
+CHAT_OP_SCHEMA = (
+    '  {"op": "trim_clip", "clipId": "...", "trimStart": <number>, "trimEnd": <number>}\n'
+    '  {"op": "reorder_clips", "order": ["clipId1", "clipId2", ...]}\n'
+    '  {"op": "remove_clip", "clipId": "..."}\n'
+    '  {"op": "set_caption", "clipId": "...", "caption": "..."}\n'
+    '  {"op": "set_transition", "clipId": "...", "transitionType": "cut"|"crossfade"|"fade_to_black",'
+    ' "transitionDuration": <number>}\n'
+    '  {"op": "set_narration_script", "script": "..."}'
+)
+
+
+def generate_chat_ops(project: Project, message: str) -> tuple[list[dict], str | None]:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return [], "ANTHROPIC_API_KEY is not configured, so prompt-based editing is unavailable."
+
+    clips_summary = "\n".join(
+        f"clipId={clip.id} order={clip.order} file={clip.file} trimStart={clip.trimStart} "
+        f"trimEnd={clip.trimEnd} caption={clip.caption!r} "
+        f"transitionOut={clip.transitionOut.type.value}({clip.transitionOut.duration}s)"
+        for clip in project.timeline.clips
+    )
+    prompt = (
+        "You are a video timeline editing assistant. Translate the user's plain-English edit request "
+        'into JSON: {"ops": [...]}\n'
+        "Each item in ops must be exactly one of these shapes (no other fields, no other op names):\n"
+        f"{CHAT_OP_SCHEMA}\n"
+        "Only reference clipId values that exist below. If the request is unclear, impossible, or "
+        'refers to a clip that does not exist, return {"ops": []}.\n'
+        f"Current clips, in order:\n{clips_summary}\n"
+        f"Current narration script: {project.timeline.narration.script!r}\n"
+        f"User request: {message}"
+    )
+    try:
+        text = call_anthropic(prompt, max_tokens=1000)
+        parsed = parse_ai_json(text)
+        ops = parsed.get("ops") if isinstance(parsed.get("ops"), list) else []
+        return ops, None
+    except Exception as exc:
+        return [], f"AI edit request failed: {exc}"
 
 
 def choose_tts_provider(requested: str | None) -> str:
@@ -550,6 +594,30 @@ def narrate_project(project_id: UUID, session: Session = Depends(db.get_session)
         provider=provider,
         warning=warning,
     )
+
+
+@app.post("/projects/{project_id}/chat", response_model=ChatEditResult)
+def chat_edit_project(
+    project_id: UUID,
+    payload: ChatEditRequest,
+    session: Session = Depends(db.get_session),
+):
+    project = repository.get_project(session, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+
+    raw_ops, ai_warning = generate_chat_ops(project, payload.message)
+    if not raw_ops:
+        return ChatEditResult(applied=[], errors=[], warning=ai_warning, timeline=project.timeline)
+
+    new_timeline, applied, errors = apply_chat_ops(project.timeline, raw_ops)
+    if applied:
+        updated = repository.update_project(session, project.id, timeline=new_timeline)
+        result_timeline = updated.timeline
+    else:
+        result_timeline = project.timeline
+
+    return ChatEditResult(applied=applied, errors=errors, warning=ai_warning, timeline=result_timeline)
 
 
 @app.post("/projects/{project_id}/export", response_model=RenderJob)

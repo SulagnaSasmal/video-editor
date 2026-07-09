@@ -173,3 +173,35 @@ class ProjectNarrationResult(BaseModel):
     voiceoverPreviewUrl: str | None = None
     provider: str | None = None
     warning: str | None = None
+
+
+class ChatOpType(StrEnum):
+    trim_clip = "trim_clip"
+    reorder_clips = "reorder_clips"
+    remove_clip = "remove_clip"
+    set_caption = "set_caption"
+    set_transition = "set_transition"
+    set_narration_script = "set_narration_script"
+
+
+class ChatOp(BaseModel):
+    op: ChatOpType
+    clipId: str | None = None
+    trimStart: float | None = None
+    trimEnd: float | None = None
+    caption: str | None = None
+    transitionType: TransitionType | None = None
+    transitionDuration: float | None = None
+    order: list[str] | None = None
+    script: str | None = None
+
+
+class ChatEditRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class ChatEditResult(BaseModel):
+    applied: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    warning: str | None = None
+    timeline: Timeline

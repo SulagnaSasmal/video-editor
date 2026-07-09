@@ -1,4 +1,5 @@
 import type {
+  ChatEditResult,
   Project,
   ProjectNarrationResult,
   ProjectPayload,
@@ -69,6 +70,20 @@ export async function narrateProject(projectId: string) {
   }
 
   return response.json() as Promise<ProjectNarrationResult>;
+}
+
+export async function chatEditProject(projectId: string, message: string) {
+  const response = await fetch(`${API_BASE_URL}/projects/${projectId}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+
+  if (!response.ok) {
+    throw await apiError(response);
+  }
+
+  return response.json() as Promise<ChatEditResult>;
 }
 
 export async function getRenderJob(jobId: string) {

@@ -200,7 +200,10 @@ export function ClipList({ clips, onChange }: ClipListProps) {
       <div className="panel-heading">
         <div>
           <h2>Timeline</h2>
-          <p>{clips.length} clip{clips.length === 1 ? "" : "s"}</p>
+          <p>
+            {clips.length} clip{clips.length === 1 ? "" : "s"} · drag the handle to reorder, or
+            add more clips below to stitch them into one video
+          </p>
         </div>
         <button className="primary-button" type="button" onClick={addClip}>
           <Plus size={18} />

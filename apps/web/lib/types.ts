@@ -80,6 +80,13 @@ export type ProjectNarrationResult = {
   warning: string | null;
 };
 
+export type ChatEditResult = {
+  applied: string[];
+  errors: string[];
+  warning: string | null;
+  timeline: Timeline;
+};
+
 export type UploadedVideo = {
   file: string;
   originalName: string;

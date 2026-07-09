@@ -46,6 +46,7 @@ import {
 import { ClipList } from "@/components/clip-list";
 import { VideoDropzone } from "@/components/video-dropzone";
 import {
+  chatEditProject,
   createProject,
   createRenderJob,
   exportedMediaUrl,
@@ -304,6 +305,11 @@ export default function Home() {
   const [isNarratingProject, setIsNarratingProject] = useState(false);
   const [projectId, setProjectId] = useState<string | null>(null);
   const projectIdRef = useRef<string | null>(null);
+  const [chatHistory, setChatHistory] = useState<Array<{ role: "user" | "assistant"; text: string }>>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [isChatSending, setIsChatSending] = useState(false);
+  const chatUndoSnapshotRef = useRef<Timeline | null>(null);
+  const [canUndoChatEdit, setCanUndoChatEdit] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const recordingSourceStreamsRef = useRef<MediaStream[]>([]);
@@ -740,6 +746,58 @@ export default function Home() {
     setShowNarrationPrompt(false);
   }
 
+  async function sendChatMessage() {
+    const message = chatInput.trim();
+    if (!message || isChatSending) {
+      return;
+    }
+
+    setChatInput("");
+    setChatHistory((history) => [...history, { role: "user", text: message }]);
+    setIsChatSending(true);
+
+    try {
+      const id = await ensureProjectSynced();
+      const beforeEdit = timeline;
+      const result = await chatEditProject(id, message);
+
+      const parts: string[] = [];
+      if (result.applied.length > 0) {
+        chatUndoSnapshotRef.current = beforeEdit;
+        setCanUndoChatEdit(true);
+        setTimeline(result.timeline);
+        parts.push(result.applied.join(". "));
+      }
+      if (result.errors.length > 0) {
+        parts.push(`Couldn't apply: ${result.errors.join("; ")}`);
+      }
+      if (result.warning) {
+        parts.push(result.warning);
+      }
+      setChatHistory((history) => [
+        ...history,
+        { role: "assistant", text: parts.join(" ") || "I didn't find any timeline change to make for that." },
+      ]);
+    } catch (caught) {
+      setChatHistory((history) => [
+        ...history,
+        { role: "assistant", text: caught instanceof Error ? caught.message : "Edit failed." },
+      ]);
+    } finally {
+      setIsChatSending(false);
+    }
+  }
+
+  function undoLastChatEdit() {
+    if (!chatUndoSnapshotRef.current) {
+      return;
+    }
+    setTimeline(chatUndoSnapshotRef.current);
+    chatUndoSnapshotRef.current = null;
+    setCanUndoChatEdit(false);
+    setChatHistory((history) => [...history, { role: "assistant", text: "Reverted the last AI edit." }]);
+  }
+
   function addUploadedVideos(
     videos: UploadedVideo[],
     options: { navigate?: boolean; replace?: boolean } = {},
@@ -1026,24 +1084,66 @@ export default function Home() {
   }
 
   function renderAskAi() {
+    const hasProject = realClips.length > 0;
+
     return (
       <section className="ask-ai-view">
         <div className="ask-ai-center">
           <h1>
-            <span>Hey sulagna.sasmal@ust.com,</span> what's on your mind?
+            <span>Edit "{projectName}"</span> by describing what you want changed
           </h1>
-          <p>Ask anything about your videos, docs, and guides. Get answers with the source.</p>
+          <p>
+            {hasProject
+              ? `Talk to the timeline: trim a clip, reorder clips, change a caption, set a transition, or rewrite the narration script.`
+              : "Record or upload a clip first, then come back here to edit it by chatting."}
+          </p>
+
+          {chatHistory.length > 0 ? (
+            <div className="chat-history">
+              {chatHistory.map((entry, index) => (
+                <div className={`chat-bubble chat-bubble-${entry.role}`} key={index}>
+                  <strong>{entry.role === "user" ? "You" : "AI"}</strong>
+                  <p>{entry.text}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           <div className="ask-box">
-            <textarea placeholder="Ask anything..." />
+            <textarea
+              placeholder={hasProject ? 'e.g. "trim the second clip to end at 8 seconds"' : "Ask anything..."}
+              value={chatInput}
+              disabled={!hasProject || isChatSending}
+              onChange={(event) => setChatInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  void sendChatMessage();
+                }
+              }}
+            />
             <div className="ask-actions">
-              <button type="button" aria-label="Voice input" title="Voice input">
-                <Mic size={16} />
-              </button>
-              <button type="button" aria-label="Send" title="Send">
-                <Send size={16} />
+              {canUndoChatEdit ? (
+                <button type="button" aria-label="Undo last AI edit" title="Undo last AI edit" onClick={undoLastChatEdit}>
+                  <RefreshCcw size={16} />
+                </button>
+              ) : null}
+              <button
+                type="button"
+                aria-label="Send"
+                title="Send"
+                disabled={!hasProject || isChatSending || !chatInput.trim()}
+                onClick={() => void sendChatMessage()}
+              >
+                {isChatSending ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
               </button>
             </div>
           </div>
+          {hasProject ? (
+            <button className="secondary-button" type="button" onClick={() => setActiveView("editor")}>
+              Open timeline to see the result
+            </button>
+          ) : null}
           <div className="prompt-row">
             <button type="button">
               <Sparkles size={15} />
@@ -1516,6 +1616,12 @@ export default function Home() {
                     </button>
                   </div>
                   <ClipList clips={timeline.clips} onChange={(clips) => setTimeline({ ...timeline, clips })} />
+                  <div className="add-more-clips">
+                    <p>Add another recording or upload to stitch it onto the end of this project:</p>
+                    <VideoDropzone
+                      onUploaded={(videos) => addUploadedVideos(videos, { navigate: false, replace: false })}
+                    />
+                  </div>
                   <div className="scene-list">
                     {editorScenes.map((scene) => (
                       <article className="scene-row" key={scene.clip.id}>
@@ -1540,19 +1646,28 @@ export default function Home() {
                   {guide ? (
                     <button className="refresh-voiceover" type="button" onClick={applyScriptToCaptions}>
                       <RefreshCcw size={16} />
-                      Refresh voiceover
+                      Copy guide script into clip 1 caption
                     </button>
                   ) : null}
-                  {realClips.length >= 2 ? (
-                    <button
-                      className="refresh-voiceover"
-                      type="button"
-                      disabled={isNarratingProject}
-                      onClick={handleNarrateProject}
-                    >
-                      {isNarratingProject ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
-                      Add AI narration across all clips
-                    </button>
+                  <button
+                    className="refresh-voiceover"
+                    type="button"
+                    disabled={isNarratingProject}
+                    onClick={handleNarrateProject}
+                  >
+                    {isNarratingProject ? <Loader2 className="spin" size={16} /> : <Sparkles size={16} />}
+                    {isNarratingProject
+                      ? "Generating AI voiceover..."
+                      : realClips.length >= 2
+                        ? `Generate AI voiceover across all ${realClips.length} clips`
+                        : "Generate AI voiceover for this clip"}
+                  </button>
+                  {narrationResult?.voiceoverPreviewUrl ? (
+                    <div className="voiceover-preview">
+                      <p>AI voiceover ready ({narrationResult.provider}):</p>
+                      <audio controls src={exportedMediaUrl(narrationResult.voiceoverPreviewUrl)} />
+                      {narrationResult.warning ? <small>{narrationResult.warning}</small> : null}
+                    </div>
                   ) : null}
                 </>
               ) : null}
@@ -1590,10 +1705,20 @@ export default function Home() {
                     onClick={handleNarrateProject}
                   >
                     {isNarratingProject ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-                    {realClips.length >= 2 ? "Generate whole-video narration" : "Refresh voiceover"}
+                    {isNarratingProject
+                      ? "Generating..."
+                      : realClips.length >= 2
+                        ? `Generate voiceover across all ${realClips.length} clips`
+                        : "Generate voiceover"}
                   </button>
                   {voiceStatus || narrationResult?.warning ? (
                     <p className="tool-status">{voiceStatus || narrationResult?.warning}</p>
+                  ) : null}
+                  {narrationResult?.voiceoverPreviewUrl ? (
+                    <div className="voiceover-preview">
+                      <p>AI voiceover ready ({narrationResult.provider}):</p>
+                      <audio controls src={exportedMediaUrl(narrationResult.voiceoverPreviewUrl)} />
+                    </div>
                   ) : null}
                 </div>
               ) : null}
